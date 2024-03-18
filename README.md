@@ -297,6 +297,10 @@ Escalation status:
 - [0xLogos](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/48/#issuecomment-1956083894): rejected
 - [xiaoming9090](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/48/#issuecomment-1959556662): rejected
 
+**sherlock-admin4**
+
+The Lead Senior Watson signed off on the fix.
+
 # Issue H-2: A malicious user can bypass limit order trading fees via cross-function re-entrancy 
 
 Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/75 
@@ -661,7 +665,7 @@ You may delete or edit your escalation comment anytime before the 48-hour escala
 
 **sherlock-admin**
 
-The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/279.
+The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/274.
 
 **securitygrid**
 
@@ -696,6 +700,10 @@ Escalation status:
 - [ydspa](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/75/#issuecomment-1955908637): rejected
 - [0xLogos](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/75/#issuecomment-1957729031): rejected
 - [xiaoming9090](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/75/#issuecomment-1959560417): rejected
+
+**sherlock-admin4**
+
+The Lead Senior Watson signed off on the fix.
 
 # Issue H-3: Incorrect handling of PnL during liquidation 
 
@@ -1139,378 +1147,16 @@ It appears that this issue #186 and #192 are covering the same ground.
 
 The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/266.
 
-# Issue H-4: `marginDepositedTotal` can be significantly inflated 
+**sherlock-admin4**
 
-Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/181 
+The Lead Senior Watson signed off on the fix.
 
-## Found by 
-CL001, Dliteofficial, KingNFT, chaduke, evmboi32, juan, ni8mare, vvv, xiaoming90
-## Summary
-
-The `marginDepositedTotal` can be significantly inflated due to an underflow that occurs when casting int256 to uint256, leading to core functionalities and accounting of the protocol being broken and assets being stuck.
-
-## Vulnerability Detail
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L233
-
-```solidity
-File: FlatcoinVault.sol
-216:     function settleFundingFees() public returns (int256 _fundingFees) {
-..SNIP..
-226:         // Calculate the funding fees accrued to the longs.
-227:         // This will be used to adjust the global margin and collateral amounts.
-228:         _fundingFees = PerpMath._accruedFundingTotalByLongs(_globalPositions, unrecordedFunding);
-229: 
-230:         // In the worst case scenario that the last position which remained open is underwater,
-231:         // we set the margin deposited total to 0. We don't want to have a negative margin deposited total.
-232:         _globalPositions.marginDepositedTotal = (int256(_globalPositions.marginDepositedTotal) > _fundingFees)
-233:             ? uint256(int256(_globalPositions.marginDepositedTotal) + _fundingFees)
-234:             : 0;
-235: 
-236:         _updateStableCollateralTotal(-_fundingFees);
-```
-
-The `_globalPositions.marginDepositedTotal` is uint256. Thus, the value assigned to this state variable must always be a non-negative value. The logic in Lines 232-234 intends to ensure that the system can never have a negative margin deposited total.
-
-The `_fundingFees` funding fee at Line 228 above can be positive (gain by long traders) or negative (loss by long traders). 
-
-Assume that the `_fundingFees` is `-20` (negative indicating a loss by long traders and a win for LP stakers) and the current `_globalPositions.marginDepositedTotal` is 10. 
-
-When Line 232 above execute, the condition `(int256(_globalPositions.marginDepositedTotal) > _fundingFees)` equal to `(+10 > -20)` and evaluate to True.
-
-Subseqently, Line 233 will be executed `uint256(int256(_globalPositions.marginDepositedTotal) + _fundingFees)`, which lead to the following result:
-
-```solidity
-➜ uint256(int256(10) - 20)
-Type: uint
-├ Hex: 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff6
-└ Decimal: 115792089237316195423570985008687907853269984665640564039457584007913129639926
-```
-
-An integer underflow due to unsafe casting has occurred, which results in `marginDepositedTotal` being set to a significantly large number (`115792089237316195423570985008687907853269984665640564039457584007913129639926`) and become significantly inflated.
-
-The operation `int256(10) - 20` results in a negative value (-10). When casting `int256(-10)` to uint256, Instead of throwing an error, Solidity handles this underflow by wrapping the result to the maximum value that `uint256` can represent and then subtracts the deficit, which results in the above large number.
-
-Note that Solidity does not automatically check for overflows or underflows when casting.
-
-## Impact
-
-The `marginDepositedTotal` is one of the most important states in the system, along with the `stableCollateralTotal`. It represents the total amount of margin deposited or owned by the long traders. The entire functioning of the protocol relies on the proper accounting of the `marginDepositedTotal`. If the `marginDepositedTotal` is incorrect, as shown in the above example, the protocol and the vault are effectively broken.
-
-In addition, the `0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff6` value in the `marginDepositedTotal` is already close to the max number supported by uint256. Thus, most operations such as opening/adjusting/closing position, funding fee settlement, or PnL accruing that increase the `_globalPositions.marginDepositedTotal` further will not work as it will result in an overflow. Since users cannot close their positions, that also means that their assets are stuck within the system.
-
-## Code Snippet
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L233
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-Consider performing the calculation in `int256` and then checking if the result is positive before casting it back to `uint256`. If the result is negative or zero, you can set `_globalPositions.marginDepositedTotal` to 0.
-
-```diff
-+ int256 newMarginDepositedTotal = int256(_globalPositions.marginDepositedTotal) + _fundingFees;
-// In the worst case scenario that the last position which remained open is underwater,
-// we set the margin deposited total to 0. We don't want to have a negative margin deposited total.
-- _globalPositions.marginDepositedTotal = (int256(_globalPositions.marginDepositedTotal) > _fundingFees)
-+ _globalPositions.marginDepositedTotal = (newMarginDepositedTotal > 0)
--	? uint256(int256(_globalPositions.marginDepositedTotal) + _fundingFees)
-+	? uint256(newMarginDepositedTotal)
-	: 0;
-```
-
-
-
-## Discussion
-
-**sherlock-admin**
-
-3 comment(s) were left on this issue during the judging contest.
-
-**karanctf** commented:
->  same as 78
-
-**ubl4nk** commented:
-> invalid -> this is a Low, marginDepositedTotal should be higher than 57896044618658097711785492504343953926634992332820282019728792003956564819967 for this scenario to happen, just Google it "int256 range"
-
-**takarez** commented:
->  valid: high(2)
-
-
-
-**sherlock-admin**
-
-The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/275.
-
-# Issue H-5: Inconsistent in the margin transferred to LP during liquidation when settledMargin < 0 
-
-Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/182 
-
-The protocol has acknowledged this issue.
-
-## Found by 
-xiaoming90
-## Summary
-
-There is a discrepancy in the approach of computing the expected gain and loss per share within the `liquidate` and `_stableCollateralPerShareLiquidation` functions, which will lead to an unexpected revert during the liquidation process.
-
-Liquidation is the core component of the protocol and is important to the solvency of the protocol. If the liquidation does not execute as intended, underwater positions and bad debt accumulate in the protocol, threatening the solvency of the protocol.
-
-## Vulnerability Detail
-
-At Line 109 below, the `settledMargin` is greater than 0, a portion (or all) of the margin will be sent to the liquidator and LPs. If the `settledMargin` is negative, the LPs will bear the cost of the underwater position's loss.
-
-When the `liquidate` function is executed, the `liquidationInvariantChecks` modifier will be triggered to perform invariant checks before and after the execution.
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LiquidationModule.sol#L85
-
-```solidity
-File: LiquidationModule.sol
-085:     function liquidate(uint256 tokenId) public nonReentrant whenNotPaused liquidationInvariantChecks(vault, tokenId) {
-086:         FlatcoinStructs.Position memory position = vault.getPosition(tokenId);
-087: 
-088:         (uint256 currentPrice, ) = IOracleModule(vault.moduleAddress(FlatcoinModuleKeys._ORACLE_MODULE_KEY)).getPrice();
-089: 
-090:         // Settle funding fees accrued till now.
-091:         vault.settleFundingFees();
-092: 
-093:         // Check if the position can indeed be liquidated.
-094:         if (!canLiquidate(tokenId)) revert FlatcoinErrors.CannotLiquidate(tokenId);
-095: 
-096:         FlatcoinStructs.PositionSummary memory positionSummary = PerpMath._getPositionSummary(
-097:             position,
-098:             vault.cumulativeFundingRate(),
-099:             currentPrice
-100:         );
-101: 
-102:         // Check that the total margin deposited by the long traders is not -ve.
-103:         // To get this amount, we will have to account for the PnL and funding fees accrued.
-104:         int256 settledMargin = positionSummary.marginAfterSettlement;
-105: 
-106:         uint256 liquidatorFee;
-107: 
-108:         // If the settled margin is greater than 0, send a portion (or all) of the margin to the liquidator and LPs.
-109:         if (settledMargin > 0) {
-// Do something
-138:         } else {
-139:             // If the settled margin is -ve then the LPs have to bear the cost.
-140:             // Adjust the stable collateral total to account for user's profit/loss and the negative margin.
-141:             // Note: We are adding `settledMargin` and `profitLoss` instead of subtracting because of their sign (which will be -ve).
-142:             vault.updateStableCollateralTotal(settledMargin - positionSummary.profitLoss);
-143:         }
-```
-
-The `liquidationInvariantChecks` modifier will trigger the `_stableCollateralPerShareLiquidation` function internally. This function will compute the `expectedStableCollateralPerShare` based on the remaining margin (also called `settledMargin`), as shown in Line 130 below. 
-
-Assume that the liquidated position's current `settledMargin` is -3 (marginDeposit=2, accruedFee=0, PnL=-5). 
-
-In this case, at Line 142 above within the `liquidate` function, the expected gain or loss of the LP is computed via `settledMargin - positionSummary.profitLoss`, which is equal to +2 (-3 - (-5))
-
-However, within the invariant check (`_stableCollateralPerShareLiquidation`) below, at Line 150 below, the expected gain or loss of the LP is computed only via the `settledMargin` (remaining margin), which is equal to -3.
-
-Thus, there is a discrepancy in the approach of computing the expected gain and loss per share within the `liquidate` and `_stableCollateralPerShareLiquidation` functions, and the `expectedStableCollateralPerShare` computed will deviate from the actual gain/loss per share during liquidation, leading to an unexpected revert during the check at Line 152 below during the liquidation process.
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/misc/InvariantChecks.sol#L118
-
-```solidity
-File: InvariantChecks.sol
-118:     function _stableCollateralPerShareLiquidation(
-119:         IStableModule stableModule,
-120:         uint256 liquidationFee,
-121:         int256 remainingMargin,
-122:         uint256 stableCollateralPerShareBefore,
-123:         uint256 stableCollateralPerShareAfter
-124:     ) private view {
-125:         uint256 totalSupply = stableModule.totalSupply();
-126: 
-127:         if (totalSupply == 0) return;
-128: 
-129:         int256 expectedStableCollateralPerShare;
-130:         if (remainingMargin > 0) {
-131:             if (remainingMargin > int256(liquidationFee)) {
-132:                 // position is healthy and there is a keeper fee taken from the margin
-133:                 // evaluate exact increase in stable collateral
-134:                 expectedStableCollateralPerShare =
-135:                     int256(stableCollateralPerShareBefore) +
-136:                     (((remainingMargin - int256(liquidationFee)) * 1e18) / int256(stableModule.totalSupply()));
-137:             } else {
-138:                 // position has less or equal margin than liquidation fee
-139:                 // all the margin will go to the keeper and no change in stable collateral
-140:                 if (stableCollateralPerShareBefore != stableCollateralPerShareAfter)
-141:                     revert FlatcoinErrors.InvariantViolation("stableCollateralPerShareLiquidation");
-142: 
-143:                 return;
-144:             }
-145:         } else {
-146:             // position is underwater and there is no keeper fee
-147:             // evaluate exact decrease in stable collateral
-148:             expectedStableCollateralPerShare =
-149:                 int256(stableCollateralPerShareBefore) +
-150:                 ((remainingMargin * 1e18) / int256(stableModule.totalSupply()));
-151:         }
-152:         if (
-153:             expectedStableCollateralPerShare + 1e6 < int256(stableCollateralPerShareAfter) || // rounding error
-154:             expectedStableCollateralPerShare - 1e6 > int256(stableCollateralPerShareAfter)
-155:         ) revert FlatcoinErrors.InvariantViolation("stableCollateralPerShareLiquidation");
-156:     }
-```
-
-## Impact
-
-Liquidation is the core component of the protocol and is important to the solvency of the protocol. If the liquidation does not execute as intended, such as in the scenario mentioned above where the invariant check will revert unexpectedly, underwater positions and bad debt accumulate in the protocol, threatening the solvency of the protocol.
-
-## Code Snippet
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/misc/InvariantChecks.sol#L118
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-Ensure that the formula used to compute the expected `StableCollateralPerShare` during the invariant check is consistent with the formula used within the actual liquidation function.
-
-```diff
-// position is underwater and there is no keeper fee
-// evaluate exact decrease in stable collateral
-expectedStableCollateralPerShare =
-    int256(stableCollateralPerShareBefore) +
--   ((remainingMargin * 1e18) / int256(stableModule.totalSupply()));
-+	(((remainingMargin - positionSummary.profitLoss) * 1e18) / int256(stableModule.totalSupply()));    
-```
-
-
-
-## Discussion
-
-**sherlock-admin**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**takarez** commented:
->  valid: there is a decrepancy that will cause the liquidation to revert; high(4)
-
-
-
-**santipu03**
-
-Escalate
-
-This issue is a duplicate of #180. 
-
-Both issues have the same root cause, which is not correctly handling the PnL when updating the total collateral on liquidations. The fix for this issue should be to update the total collateral correctly on `liquidate()`, the function `_stableCollateralPerShareLiquidation()` doesn't have to change. 
-
-Fixing issue #180 will fix this issue as well, therefore, they're duplicates. 
-
-**sherlock-admin2**
-
-> Escalate
-> 
-> This issue is a duplicate of #180. 
-> 
-> Both issues have the same root cause, which is not correctly handling the PnL when updating the total collateral on liquidations. The fix for this issue should be to update the total collateral correctly on `liquidate()`, the function `_stableCollateralPerShareLiquidation()` doesn't have to change. 
-> 
-> Fixing issue #180 will fix this issue as well, therefore, they're duplicates. 
-
-You've created a valid escalation!
-
-To remove the escalation from consideration: Delete your comment.
-
-You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
-
-**xiaoming9090**
-
-Disagree with the escalation. This issue is not a duplicate of Issue 180.
-
-The root cause of this issue is a discrepancy between the formula used in the invariant check and the actual liquidation function, which will lead to an unexpected revert during the liquidation process, while Issue 180 discusses the wrong formula used when computing the PnL.
-
-Fixing Issue 180 blindly without cross-checking the issue in this report will result in an incomplete fix being implemented.
-
-Most importantly, the solution I proposed in this report:
-
-```diff
-function _stableCollateralPerShareLiquidation(
-..SNIP..
-// position is underwater and there is no keeper fee
-// evaluate exact decrease in stable collateral
-expectedStableCollateralPerShare =
-    int256(stableCollateralPerShareBefore) +
--   ((remainingMargin * 1e18) / int256(stableModule.totalSupply()));
-+	(((remainingMargin - positionSummary.profitLoss) * 1e18) / int256(stableModule.totalSupply()));  
-```
-
-mapped to the following part (Line 142) of the liquidation logic, where I pointed out the discrepancy. Above uses `remainingMargin/settledMargin`, while below uses `settledMargin - positionSummary.profitLoss`.
-
-```solidity
-File: LiquidationModule.sol
-085:     function liquidate(uint256 tokenId) public nonReentrant whenNotPaused liquidationInvariantChecks(vault, tokenId) {
-086:         FlatcoinStructs.Position memory position = vault.getPosition(tokenId);
-..SNIP..
-139:             // If the settled margin is -ve then the LPs have to bear the cost.
-140:             // Adjust the stable collateral total to account for user's profit/loss and the negative margin.
-141:             // Note: We are adding `settledMargin` and `profitLoss` instead of subtracting because of their sign (which will be -ve).
-142:             vault.updateStableCollateralTotal(settledMargin - positionSummary.profitLoss);
-```
-
-It is unrelated to the solution in Issue 180. In Issue 180, the fix is only to correct the formula within the `updateGlobalPositionData` function. Line 142 of the code in the `liquidate` function above is correct and mathematically sound and should not be updated to intentionally make it aligned with the invariant check, which will cause another bug to surface if one does so.
-
-**itsermin**
-
-@xiaoming9090 we have a few of these [underwater case liquidation test scenarios,](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/test/unit/Liquidation-Module/Liquidate.t.sol#L281) but none of them revert on liquidation.
-
-If there was an incorrect calculation here, I would expect them to revert, right?
-
-**Evert0x**
-
-Planning to reject escalation and keep issue state as is.
-
-> The root cause of this issue is a discrepancy between the formula used in the invariant check and the actual liquidation function, which will lead to an unexpected revert during the liquidation process, while Issue 180 discusses the wrong formula used when computing the PnL.
-
-I believe this is correct and both reports identify a different issue. 
-
-@xiaoming9090 do you have a reply to the sponsor? https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/182#issuecomment-1960453456
-
-**xiaoming9090**
-
-@Evert0x This issue should be invalid.
-
-I have reviewed this issue again. When the `stableCollateralPerShareBefore` is retrieved from [here](https://github.com/sherlock-audit/2023-12-flatmoney-xiaoming9090/blob/53e44522a88e1038db88fdca49cb45a15cbef7a4/flatcoin-v1/src/misc/InvariantChecks.sol#L61), the PnL of -5 of the liquidated account already factored in. Thus, the LP's total stable collateral increased by 5. 
-
-Subsequently, the settled margin of -3 is added over [here](https://github.com/sherlock-audit/2023-12-flatmoney-xiaoming9090/blob/53e44522a88e1038db88fdca49cb45a15cbef7a4/flatcoin-v1/src/misc/InvariantChecks.sol#L150). Thus, the overall gain/loss of LP is (5 + -3) = 2. The final result is aligned with the one in the liquidate function, so the invariant check will not revert unexpectedly. 
-
-
-
-
-
-**Czar102**
-
-In that case, planning to invalidate (even though this wasn't a proposition in the escalation, but this shows that the two issues are not duplicates and another state change should be made).
-
-**Czar102**
-
-Result:
-Invalid
-Unique
-
-Rejecting the escalation despite there is a change in issue state since the escalation didn't make correct point.
-
-**sherlock-admin2**
-
-Escalations have been resolved successfully!
-
-Escalation status:
-- [santipu03](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/182/#issuecomment-1956476915): rejected
-
-# Issue H-6: Asymmetry in profit and loss (PnL) calculations 
+# Issue H-4: Asymmetry in profit and loss (PnL) calculations 
 
 Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/186 
 
 ## Found by 
-KingNFT, chaduke, xiaoming90
+KingNFT, xiaoming90
 ## Summary
 
 An asymmetry arises in profit and loss (PnL) calculations due to relative price changes. This discrepancy emerges when adjustments to a position lead to differing PnL outcomes despite equivalent absolute price shifts in rETH, leading to loss of assets.
@@ -1691,7 +1337,11 @@ function _marginPlusProfitFunding(Position memory position, uint price) internal
 
 The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/266.
 
-# Issue H-7: Incorrect price used when updating the global position data 
+**sherlock-admin4**
+
+The Lead Senior Watson signed off on the fix.
+
+# Issue H-5: Incorrect price used when updating the global position data 
 
 Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/188 
 
@@ -1824,735 +1474,11 @@ vault.updateGlobalPositionData({
 
 The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/264.
 
-# Issue H-8: Liquidation will result in an underflow revert 
+**sherlock-admin4**
 
-Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/192 
+The Lead Senior Watson signed off on the fix.
 
-## Found by 
-xiaoming90
-## Summary
-
-Liquidation will result in an underflow revert. Liquidation is the core component of the protocol and is important to the solvency of the protocol. If the liquidation cannot be executed due to the revert described in the above scenario, underwater positions and bad debt will accumulate in the protocol, threatening the solvency of the protocol.
-
-In addition, the proper function of the protocol relies on the correct accounting of the collateral in the vault and collateral owned by long traders and LPs. If the accounting is off, the vault will be broken.
-
-## Vulnerability Detail
-
-At $T0$, the current price of ETH is \$1000 and assume the following state:
-
-| Alice's Long Position 1                                     | Bob's Long Position 2                                       | Charles (LP)     |
-| ------------------------------------------------------------ | ------------------------------------------------------------ | ---------------- |
-| Position Size = 6 ETH<br />Margin = 3 ETH<br />Last Price (entry price) = \$1000 | Position Size = 6 ETH<br />Margin = 5 ETH<br />Last Price (entry price) = \$1000 | Deposited 12 ETH |
-
-- The `stableCollateralTotal` will be 12 ETH
-- The `GlobalPositions.marginDepositedTotal` will be 8 ETH (3 + 5)
-- The `globalPosition.sizeOpenedTotal` will be 12 ETH (6 + 6)
-- The total balance of ETH in the vault is 20 ETH. 
-
-As this is a perfectly hedged market, the accrued fee will be zero, and ignored in this report for simplicity's sake.
-
-At $T1$, the price of the ETH drops from \$1000 to \$600. At this point, the settle margin of both long positions will be as follows:
-
-| Alice's Long Position 1                                     | Bob's Long Position 2                                       |
-| ------------------------------------------------------------ | ------------------------------------------------------------ |
-| priceShift = Current Price - Last Price = \$600 - \$1000 = -\$400<br />PnL = (Position Size * priceShift) / Current Price = (6 ETH * -\$400) / \$400 = -4 ETH<br />settleMargin = marginDeposited + PnL = 3 ETH + (-4 ETH) = -1 ETH | PnL = -4 ETH (Same calculation)<br />settleMargin = marginDeposited + PnL = 5 ETH + (-4 ETH) = 1 ETH |
-
-Alice's long position is underwater (settleMargin < 0), so it can be liquidated. 
-
-Since the liquidated position's settledMargin is less than 0, the code at Line 142 below will be executed.
-
-```solidity
-vault.updateStableCollateralTotal(settledMargin - positionSummary.profitLoss);
-vault.updateStableCollateralTotal((3 ETH + (-4 ETH)) - (-4 ETH)); // This effectively remove the PnL component from the equation
-vault.updateStableCollateralTotal(3 ETH);
-```
-
-After the `updateStableCollateralTotal` function is executed, the `stableCollateralTotal` will become 15 ETH (12 + 3), the `GlobalPositions.marginDepositedTotal` will remain at 8 ETH, and the total balance of ETH in the vault will remain at 20 ETH.
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LiquidationModule.sol#L85
-
-```solidity
-File: LiquidationModule.sol
-085:     function liquidate(uint256 tokenId) public nonReentrant whenNotPaused liquidationInvariantChecks(vault, tokenId) {
-..SNIP..
-109:         if (settledMargin > 0) {
-..SNIP..
-138:         } else {
-139:             // If the settled margin is -ve then the LPs have to bear the cost.
-140:             // Adjust the stable collateral total to account for user's profit/loss and the negative margin.
-141:             // Note: We are adding `settledMargin` and `profitLoss` instead of subtracting because of their sign (which will be -ve).
-142:             vault.updateStableCollateralTotal(settledMargin - positionSummary.profitLoss);
-143:         }
-..SNIP..
-159:         vault.updateGlobalPositionData({
-160:             price: position.lastPrice,
-161:             marginDelta: -(int256(position.marginDeposited) + positionSummary.accruedFunding),
-162:             additionalSizeDelta: -int256(position.additionalSize) // Since position is being closed, additionalSizeDelta should be negative.
-163:         });
-```
-
-Subsequently, the `vault.updateGlobalPositionData` will be executed. The `marginDelta` will be set to -3 ETH, as shown below:
-
-```solidity
-marginDelta = -(position.marginDeposited + positionSummary.accruedFunding)
-marginDelta = -(3 ETH + 0)
-marginDelta = -3 ETH
-```
-
-Line 179 below within the `updateGlobalPositionData` function will compute the total PnL of all the opened long positions.
-
-```solidity
-priceShift = current price - last price
-priceShift = $600 - $1000 = -$400
-
-profitLossTotal = (globalPosition.sizeOpenedTotal * priceShift) / current price
-profitLossTotal = (12 ETH * -$400) / $600
-profitLossTotal = -8 ETH
-```
-
-At Line 184 below, the `newMarginDepositedTotal` will be set to as follows:
-
-```solidity
-newMarginDepositedTotal = _globalPositions.marginDepositedTotal + _marginDelta + profitLossTotal
-newMarginDepositedTotal = 8 ETH + (-3 ETH) + (-8 ETH) = -3 ETH
-```
-
-As `newMarginDepositedTotal` is less than zero, the code at Line 192 will trigger a revert, causing the liquidation TX to revert.
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L173
-
-```solidity
-File: FlatcoinVault.sol
-168:     /// @notice Function to update the global position data.
-169:     /// @dev This function is only callable by the authorized modules.
-170:     /// @param _price The current price of the underlying asset.
-171:     /// @param _marginDelta The change in the margin deposited total.
-172:     /// @param _additionalSizeDelta The change in the size opened total.
-173:     function updateGlobalPositionData(
-174:         uint256 _price,
-175:         int256 _marginDelta,
-176:         int256 _additionalSizeDelta
-177:     ) external onlyAuthorizedModule {
-178:         // Get the total profit loss and update the margin deposited total.
-179:         int256 profitLossTotal = PerpMath._profitLossTotal({globalPosition: _globalPositions, price: _price});
-180: 
-181:         // Note that technically, even the funding fees should be accounted for when computing the margin deposited total.
-182:         // However, since the funding fees are settled at the same time as the global position data is updated,
-183:         // we can ignore the funding fees here.
-184:         int256 newMarginDepositedTotal = int256(_globalPositions.marginDepositedTotal) + _marginDelta + profitLossTotal;
-185: 
-186:         // Check that the sum of margin of all the leverage traders is not negative.
-187:         // Rounding errors shouldn't result in a negative margin deposited total given that
-188:         // we are rounding down the profit loss of the position.
-189:         // If anything, after closing the last position in the system, the `marginDepositedTotal` should can be positive.
-190:         // The margin may be negative if liquidations are not happening in a timely manner.
-191:         if (newMarginDepositedTotal < 0) {
-192:             revert FlatcoinErrors.InsufficientGlobalMargin();
-193:         }
-194: 
-195:         _globalPositions = FlatcoinStructs.GlobalPositions({
-196:             marginDepositedTotal: uint256(newMarginDepositedTotal),
-197:             sizeOpenedTotal: (int256(_globalPositions.sizeOpenedTotal) + _additionalSizeDelta).toUint256(),
-198:             lastPrice: _price
-199:         });
-200: 
-201:         // Profit loss of leverage traders has to be accounted for by adjusting the stable collateral total.
-202:         // Note that technically, even the funding fees should be accounted for when computing the stable collateral total.
-203:         // However, since the funding fees are settled at the same time as the global position data is updated,
-204:         // we can ignore the funding fees here
-205:         _updateStableCollateralTotal(-profitLossTotal);
-206:     }
-```
-
-Let's assume that there is no revert for the sake of verifying the correctness of the accounting used in the later portion of the code within the liquidation function.
-
-In this case, the latest `marginDepositedTotal` will be set to -3 ETH. 
-
-Next, the `_updateStableCollateralTotal(-profitLossTotal);` at Line 205 above will be executed, and the `stableCollateralTotal` will be set to 23 ETH.
-
-```solidity
-stableCollateralTotal = stableCollateralTotal + (-profitLossTotal)
-stableCollateralTotal = 15 ETH + (-(-8 ETH))
-stableCollateralTotal = 15 ETH + (8 ETH)
-stableCollateralTotal = 23 ETH
-```
-
-This shows that accounting is incorrect, as it is not possible for the LPs to own 23 ETH when there are only 20 ETH balance as collateral in the vault.
-
-In conclusion, there are two (2) issues identified here:
-
-1. Liquidation cannot be carried out due to revert
-2. Even if there is no revert, the accounting of collateral is off.
-
-## Impact
-
-Liquidation is the core component of the protocol and is important to the solvency of the protocol. If the liquidation cannot be executed due to the revert described in the above scenario, underwater positions and bad debt will accumulate in the protocol, threatening the solvency of the protocol.
-
-In addition, the proper function of the protocol relies on the correct accounting of the collateral in the vault and collateral owned by long traders and LPs. If the accounting is off, the vault will be broken.
-
-## Code Snippet
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LiquidationModule.sol#L85
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L173
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-In the above scenario, to prevent an underflow revert when computing the new `newMarginDepositedTotal` and fixing the incorrect balance issue, the `profitLossTotal` should be excluded within the `updateGlobalPositionData` function during liquidation. 
-
-```diff
-- profitLossTotal = PerpMath._profitLossTotal(...)
-
-- newMarginDepositedTotal = globalPositions.marginDepositedTotal + _marginDelta + profitLossTotal
-+ newMarginDepositedTotal = globalPositions.marginDepositedTotal + _marginDelta
-
-if (newMarginDepositedTotal < 0) {
-    revert FlatcoinErrors.InsufficientGlobalMargin();
-}
-
-_globalPositions = FlatcoinStructs.GlobalPositions({
-    marginDepositedTotal: uint256(newMarginDepositedTotal),
-    sizeOpenedTotal: (int256(_globalPositions.sizeOpenedTotal) + _additionalSizeDelta).toUint256(),
-    lastPrice: _price
-});
-        
-- _updateStableCollateralTotal(-profitLossTotal);
-```
-
-The existing `updateGlobalPositionData` function still needs to be used for other functions besides liquidation. As such, consider creating a separate new function (e.g., updateGlobalPositionDataDuringLiquidation) solely for use during the liquidation that includes the above fixes.
-
-**Verification of solution**
-
-Let's verify if the fixes work as intended using the same example in the report.
-
-The following means that the Initial Deposited Margin (3 ETH) of Alice's position is being transferred to the LPs.
-
-```solidity
-vault.updateStableCollateralTotal(settledMargin - positionSummary.profitLoss);
-vault.updateStableCollateralTotal((3 ETH + (-4 ETH)) - (-4 ETH)); // This effectively remove the PnL component from the equation
-vault.updateStableCollateralTotal(3 ETH);
-```
-
-After the `updateStableCollateralTotal` function is executed, the `stableCollateralTotal` will become 15 ETH (12 + 3), the `GlobalPositions.marginDepositedTotal` will remain at 8 ETH, and the total balance of ETH in the vault will remain at 20 ETH.
-
-The same values as the earlier example, except that the formula has changed. The `newMarginDepositedTotal` is left with 5 ETH, which is correct because this represents the ETH margin deposited by Bob's existing position in the system.
-
-```solidity
-newMarginDepositedTotal = _globalPositions.marginDepositedTotal + _marginDelta
-newMarginDepositedTotal = 8 ETH + (-3 ETH) = 5 ETH
-```
-
-The `newMarginDepositedTotal` is above 0, so there is no revert, which is good.
-
-```solidity
-stableCollateralTotal = stableCollateralTotal + 0
-stableCollateralTotal = 15 ETH (No change, remain the same)
-```
-
-In the end, `newMarginDepositedTotal` is 5 ETH and `stableCollateralTotal` is 15 ETH. There are 20 ETH balance as collateral in the vault.
-
-```solidity
-(newMarginDepositedTotal + stableCollateralTotal) == (20 ETH balance as collateral in the vault)
-```
-
-Thus, they are in sync now. Also, there is no revert or underflow error.
-
-
-
-## Discussion
-
-**sherlock-admin**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**takarez** commented:
->  valid: high(5)
-
-
-
-**itsermin**
-
-This has been resolved in issue #186 fix.
-Test scenario added here: https://github.com/dhedge/flatcoin-v1/pull/266/commits/3a95a5b932fb9dcd770afd589751ecfd151360a8
-
-**sherlock-admin**
-
-The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/266.
-
-**santipu03**
-
-Escalate
-
-This issue is actually a duplicate of #180. 
-
-Issue #180 describes the vulnerability in a generalized way. The impact may be different but the root cause is the same: an incorrect handling of PnL during liquidation. Also, the fix is the same so this issue should be duplicate of #180. 
-
-**sherlock-admin2**
-
-> Escalate
-> 
-> This issue is actually a duplicate of #180. 
-> 
-> Issue #180 describes the vulnerability in a generalized way. The impact may be different but the root cause is the same: an incorrect handling of PnL during liquidation. Also, the fix is the same so this issue should be duplicate of #180. 
-
-You've created a valid escalation!
-
-To remove the escalation from consideration: Delete your comment.
-
-You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
-
-**Czar102**
-
-Would like @nevillehuang to double check.
-
-Planning to accept the escalation and duplicate this with #180.
-
-**nevillehuang**
-
-> Would like @nevillehuang to double check.
-> 
-> Planning to accept the escalation and duplicate this with #180.
-
-Agree, should be duplicates, both issues arises due to the incorrect handling of `profitLossTotal` causing different impacts
-
-**Czar102**
-
-Result:
-High
-Duplicate of #180
-
-
-**sherlock-admin2**
-
-Escalations have been resolved successfully!
-
-Escalation status:
-- [santipu03](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/192/#issuecomment-1956262089): accepted
-
-# Issue H-9: Incorrect skew check formula used during withdrawal 
-
-Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/193 
-
-## Found by 
-Bony, dany.armstrong90, deepplus, ni8mare, xiaoming90
-## Summary
-
-The purpose of the long max skew (`skewFractionMax`) is to prevent the FlatCoin holders from being increasingly short. However, the existing controls are not adequate, resulting in the long skew exceeding the long max skew deemed acceptable by the protocol, as shown in the example in this report. 
-
-When the  FlatCoin holders are overly net short, an increase in the collateral price (rETH) leads to a more pronounced decrease in the price of UNIT, amplifying the risk and loss of the FlatCoin holders and increasing the risk of UNIT's price going to 0.
-
-## Vulnerability Detail
-
-When the users withdraw their collateral (rETH) from the system, the skew check (`checkSkewMax()`) at Line 132 will be executed to ensure that the withdrawal does not cause the system to be too skewed towards longs and the skew is still within the `skewFractionMax`.
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/DelayedOrder.sol#L132
-
-```solidity
-File: DelayedOrder.sol
-109:     function announceStableWithdraw(
-110:         uint256 withdrawAmount,
-111:         uint256 minAmountOut,
-112:         uint256 keeperFee
-113:     ) external whenNotPaused {
-114:         uint64 executableAtTime = _prepareAnnouncementOrder(keeperFee);
-115: 
-116:         IStableModule stableModule = IStableModule(vault.moduleAddress(FlatcoinModuleKeys._STABLE_MODULE_KEY));
-117:         uint256 lpBalance = IERC20Upgradeable(stableModule).balanceOf(msg.sender);
-118: 
-119:         if (lpBalance < withdrawAmount)
-120:             revert FlatcoinErrors.NotEnoughBalanceForWithdraw(msg.sender, lpBalance, withdrawAmount);
-121: 
-122:         // Check that the requested minAmountOut is feasible
-123:         {
-124:             uint256 expectedAmountOut = stableModule.stableWithdrawQuote(withdrawAmount);
-125: 
-126:             if (keeperFee > expectedAmountOut) revert FlatcoinErrors.WithdrawalTooSmall(expectedAmountOut, keeperFee);
-127: 
-128:             expectedAmountOut -= keeperFee;
-129: 
-130:             if (expectedAmountOut < minAmountOut) revert FlatcoinErrors.HighSlippage(expectedAmountOut, minAmountOut);
-131: 
-132:             vault.checkSkewMax({additionalSkew: expectedAmountOut});
-133:         }
-```
-
-However, using the `checkSkewMax` function for checking skew when LPs/stakers withdraw collateral from the system is incorrect. The `checkSkewMax` function is specifically used when there is a change in position size on the long-trader side.
-
-In Line 303 below, the numerator of the formula holds the collateral/margin size of the long traders, while the denominator of the formula holds the collateral size of the LPs. When the LP withdraws collateral from the system, it should be deducted from the denominator. Thus, the formula is incorrect to be used in this scenario.
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L303
-
-```solidity
-File: FlatcoinVault.sol
-294:     /// @notice Asserts that the system will not be too skewed towards longs after additional skew is added (position change).
-295:     /// @param _additionalSkew The additional skew added by either opening a long or closing an LP position.
-296:     function checkSkewMax(uint256 _additionalSkew) public view {
-297:         // check that skew is not essentially disabled
-298:         if (skewFractionMax < type(uint256).max) {
-299:             uint256 sizeOpenedTotal = _globalPositions.sizeOpenedTotal;
-300: 
-301:             if (stableCollateralTotal == 0) revert FlatcoinErrors.ZeroValue("stableCollateralTotal");
-302: 
-303:             uint256 longSkewFraction = ((sizeOpenedTotal + _additionalSkew) * 1e18) / stableCollateralTotal;
-304: 
-305:             if (longSkewFraction > skewFractionMax) revert FlatcoinErrors.MaxSkewReached(longSkewFraction);
-306:         }
-307:     }
-```
-
-Let's make a comparison between the current formula and the expected (correct) formula to determine if there is any difference:
-
-Let `sizeOpenedTotal` be $SO_{total}$, `stableCollateralTotal` be $SC_{total}$ and `_additionalSkew` be $AS$. Assume that the `sizeOpenedTotal` is 100 ETH and `stableCollateralTotal` is 100 ETH. Thus, the current `longSkewFraction` is zero as both the long and short sizes are the same.
-
-Assume that someone intends to withdraw 20 ETH collateral from the system. Thus, the `_additionalSkew` will be 20 ETH.
-
-**Current Formula**
-
-$$
-\begin{align} 
-skewFrac = \frac{SO_{total} + AS}{SC_{total}} \\
-skewFrac = \frac{100 + 20}{100} = 1.2
-\end{align}
-$$
-
-**Expected (correct) formula**
-
-$$
-\begin{align} 
-skewFrac = \frac{SO_{total}}{SC_{total} - AS} \\
-skewFrac = \frac{100}{100 - 20} = 1.25
-\end{align}
-$$
-
-Assume the `skewFractionMax` is 1.20 within the protocol.
-
-The first formula will indicate that the long skew after the withdrawal will not exceed the long max skew, and thus, the withdrawal will proceed to be executed. Immediately after the execution is completed, the system exceeds the `skewFractionMax` of 1.2 as the current long skew has become 1.25.
-
-## Impact
-
-The purpose of the long max skew (`skewFractionMax`) is to prevent the FlatCoin holders from being increasingly short. However, the existing controls are not adequate, resulting in the long skew exceeding the long max skew deemed acceptable by the protocol, as shown in the example above. 
-
-When the FlatCoin holders are overly net short, an increase in the collateral price (rETH) leads to a more pronounced decrease in the price of UNIT, amplifying the risk and loss of the FlatCoin holders and increasing the risk of UNIT's price going to 0.
-
-## Code Snippet
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L303
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-The `checkSkewMax` function is designed specifically for long trader's operations such as open, adjust, and close positions. They cannot be used interchangeably with the LP's operations, such as depositing and withdrawing stable collateral.
-
-Consider implementing a new function that uses the following for calculating the long skew after withdrawal:
-
-$$
-skewFrac = \frac{SO_{total}}{SC_{total} - AS}
-$$
-
-Let `sizeOpenedTotal` be $SO_{total}$, `stableCollateralTotal` be $SC_{total}$ and `_additionalSkew` be $AS$. 
-
-
-
-## Discussion
-
-**sherlock-admin**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**takarez** commented:
->  valid: medium(7)
-
-
-
-**sherlock-admin**
-
-The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/280.
-
-**santipu03**
-
-Escalate
-
-The impact should be QA.
-
-While I agree that when announcing a withdrawal of collateral the skew is not correctly checked, the order won't execute if the skew is too high due to this check [here](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/StableModule.sol#L130)
-
-Therefore, the skew won't be higher than the max allowed skew.
-
-**sherlock-admin2**
-
-> Escalate
-> 
-> The impact should be QA.
-> 
-> While I agree that when announcing a withdrawal of collateral the skew is not correctly checked, the order won't execute if the skew is too high due to this check [here](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/StableModule.sol#L130)
-> 
-> Therefore, the skew won't be higher than the max allowed skew.
-
-You've created a valid escalation!
-
-To remove the escalation from consideration: Delete your comment.
-
-You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
-
-**NishithPat**
-
-Escalate
-
-Even if the order may not execute due to this check - `vault.checkSkewMax({additionalSkew: 0})`, the fact that it allows the user to call `announceWithdraw` in this manner is still an issue.
-
-Consider the same example in the above issue where a user tries to withdraw 20 ETH. Using the current formula `announceWithdraw` would execute because the `longSkewFraction` is not greater than 1.2 (`skewFractionMax`). When it is time for its execution using the `executeWithdraw` function, it might revert due to this check - `vault.checkSkewMax({additionalSkew: 0})`.
-
-The user notices that his withdrawal does not get executed. So, he decides to withdraw lower amounts for the execution to take place. 
-
-In order to do this he needs to do the additional step of cancelling the previous `announceWithdraw` first using `cancelExistingOrder` and then call `announceWithdraw` with a lower amount. Or, even if he does not call `cancelExistingOrder` first, and uses `announceWithdraw` directly, it would call the `_prepareAnnouncementOrder` function which would anyway call the `cancelExistingOrder` function. So, this means that the user has to pay additional gas to do this. 
-
-```solidity
-function _prepareAnnouncementOrder(uint256 keeperFee) internal returns (uint64 executableAtTime) {
-        // Settle funding fees to not encounter the `MaxSkewReached` error.
-        // This error could happen if the funding fees are not settled for a long time and the market is skewed long
-        // for a long time.
-        vault.settleFundingFees();
-
-        if (keeperFee < IKeeperFee(vault.moduleAddress(FlatcoinModuleKeys._KEEPER_FEE_MODULE_KEY)).getKeeperFee())
-            revert FlatcoinErrors.InvalidFee(keeperFee);
-
-        // If the user has an existing pending order that expired, then cancel it.
-        cancelExistingOrder(msg.sender);
-
-        executableAtTime = uint64(block.timestamp + vault.minExecutabilityAge());
-    }
- ```
- 
-Another important point to note is that a user will be able to call `announceWithdraw` only after `order.executableAtTime + vault.maxExecutabilityAge()` amount of time has passed because `cancelExistingOrder` has this check -
- 
- ```solidity
- if (block.timestamp <= order.executableAtTime + vault.maxExecutabilityAge())
-            revert FlatcoinErrors.OrderHasNotExpired();
-```
-
-So, this means that not only does a user have to spend additional gas to cancel the original `announceWithdraw` request, but he also needs to wait until he can send a new withdrawal transaction as he cannot withdraw whenever he wants based on what’s written above. The old order needs to expire first.
-
-This might not seem much for a single user, but many users can face the same issue. They would also have to spend more gas and time to execute withdrawals. This combined effect cannot be ignored. This would make for a terrible UX. 
-
-I mean all these extra steps could be easily avoided if the protocol chooses to use the right formula for `announceWithdraw` as well. The first transaction for `announceWithdraw` would not have been executed in the first place, had the right formula been used.
-
-`checkSkewMax` function is a core invariant of the system. Its implementation cannot be inconsistent. It cannot be different in `announceWithdraw` and `executeWithdraw.`
-
-The impact may not seem high, but it is not QA.
-
-**sherlock-admin2**
-
-> Escalate
-> 
-> Even if the order may not execute due to this check - `vault.checkSkewMax({additionalSkew: 0})`, the fact that it allows the user to call `announceWithdraw` in this manner is still an issue.
-> 
-> Consider the same example in the above issue where a user tries to withdraw 20 ETH. Using the current formula `announceWithdraw` would execute because the `longSkewFraction` is not greater than 1.2 (`skewFractionMax`). When it is time for its execution using the `executeWithdraw` function, it might revert due to this check - `vault.checkSkewMax({additionalSkew: 0})`.
-> 
-> The user notices that his withdrawal does not get executed. So, he decides to withdraw lower amounts for the execution to take place. 
-> 
-> In order to do this he needs to do the additional step of cancelling the previous `announceWithdraw` first using `cancelExistingOrder` and then call `announceWithdraw` with a lower amount. Or, even if he does not call `cancelExistingOrder` first, and uses `announceWithdraw` directly, it would call the `_prepareAnnouncementOrder` function which would anyway call the `cancelExistingOrder` function. So, this means that the user has to pay additional gas to do this. 
-> 
-> ```solidity
-> function _prepareAnnouncementOrder(uint256 keeperFee) internal returns (uint64 executableAtTime) {
->         // Settle funding fees to not encounter the `MaxSkewReached` error.
->         // This error could happen if the funding fees are not settled for a long time and the market is skewed long
->         // for a long time.
->         vault.settleFundingFees();
-> 
->         if (keeperFee < IKeeperFee(vault.moduleAddress(FlatcoinModuleKeys._KEEPER_FEE_MODULE_KEY)).getKeeperFee())
->             revert FlatcoinErrors.InvalidFee(keeperFee);
-> 
->         // If the user has an existing pending order that expired, then cancel it.
->         cancelExistingOrder(msg.sender);
-> 
->         executableAtTime = uint64(block.timestamp + vault.minExecutabilityAge());
->     }
->  ```
->  
-> Another important point to note is that a user will be able to call `announceWithdraw` only after `order.executableAtTime + vault.maxExecutabilityAge()` amount of time has passed because `cancelExistingOrder` has this check -
->  
->  ```solidity
->  if (block.timestamp <= order.executableAtTime + vault.maxExecutabilityAge())
->             revert FlatcoinErrors.OrderHasNotExpired();
-> ```
-> 
-> So, this means that not only does a user have to spend additional gas to cancel the original `announceWithdraw` request, but he also needs to wait until he can send a new withdrawal transaction as he cannot withdraw whenever he wants based on what’s written above. The old order needs to expire first.
-> 
-> This might not seem much for a single user, but many users can face the same issue. They would also have to spend more gas and time to execute withdrawals. This combined effect cannot be ignored. This would make for a terrible UX. 
-> 
-> I mean all these extra steps could be easily avoided if the protocol chooses to use the right formula for `announceWithdraw` as well. The first transaction for `announceWithdraw` would not have been executed in the first place, had the right formula been used.
-> 
-> `checkSkewMax` function is a core invariant of the system. Its implementation cannot be inconsistent. It cannot be different in `announceWithdraw` and `executeWithdraw.`
-> 
-> The impact may not seem high, but it is not QA.
-
-You've created a valid escalation!
-
-To remove the escalation from consideration: Delete your comment.
-
-You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
-
-**ydspa**
-
-> Escalate
-> 
-> The impact should be QA.
-> 
-> While I agree that when announcing a withdrawal of collateral the skew is not correctly checked, the order won't execute if the skew is too high due to this check [here](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/StableModule.sol#L130)
-> 
-> Therefore, the skew won't be higher than the max allowed skew.
-
-Good catch, i also find this issue during audit, but i finally decide not to submit it due to this check. As the impact only limits to user's gas waste, and the occurrence possibility is very low. Therefore, it's a valid low issue.
-
-**santipu03**
-
-@NishithPat 
-
-The overall probability of this happening could be considered as medium/low. Regarding the impact, in the worst case the user would have to wait one minute more to withdraw the collateral and waste a little bit of gas (cheap on Base chain). 
-
-Probability being medium/low and impact being low results on the overall severity being QA. 
-
-**NishithPat**
-
-But, you can't deny the fact that a user has to do all these extra steps just to withdraw some amount again. This is a waste of his resources. And as I said, when you look at just 1 user it might not look as much, but multiple users will face the same issue. They will also be wasting their resources. So, when looked at as a whole (keeping multiple users in mind), the resources being used just to execute these transactions again would add up. 
-
-All this could have been easily prevented, had the protocol used the right formula in `announceWithdraw` as well. The initial incorrect transaction for `announceWithdraw` would have never been executed if the right formula had been used.
-
-The issue's severity is at least a medium. Such a violation of a core invariant of the system cannot be QA.
-
-**0xLogos**
-
-Agree with the first escalation
-
-low, there's correct check in stable withdraw execution. After doing some math, you'll see that the correct check is more strict, so the announce function won't revert falsely.
-
-**NishithPat**
-
-@0xLogos 
-
-`announceWithdraw` function would have rightly reverted if they had used the right formula. LongSkew would have been 1.25, which would be greater than 1.2 (max allowed skew), based on the example in the above issue.
-
-But, since the wrong formula is used, `announceWithdraw` will not revert as it should have as LongSkew is not greater than 1.2.
-
-**0xLogos**
-
-@NishithPat 
-
-I mean there is no situations when correct check in stable withdraw execution allows execution, but announcment is reverting because of this incorrect check.
-
-It's addition to first escalation because to fully invalidate this issue you need to ensure that incorrect check wil not cause dos to legitimate orders.
-
-**NishithPat**
-
-I don't think I understand what you are trying to convey.
-
-All I am trying to say is that `announceWithdraw` must revert as well and not just `executeWithdraw` when longSkew becomes greater than max skew. For this, I have provided my reasons above.
-
-Anyway, I have said what I wanted to say. I believe this issue is valid. The sponsors do think the same, as they have fixed the issue.
-
-I am okay with whatever the judges decide.
-
-**xiaoming9090**
-
-Disagree with the escalator that the impact is QA/Low.
-
-NishithPat has made a valid and comprehensive response to the escalations. I would like to add to his response.
-
-The impact of this issue is not just limited to the waste of gas. We must understand that all trading operations (open/adjust/close order, deposit/withdraw) are time-sensitive in the real world.
-
-Let's assume that using the current formula `announceWithdraw`, the withdrawal trade order will be executed because the `longSkewFraction` is not greater than 1.2 (`skewFractionMax`). However, when it is time for its execution using the `executeWithdraw` function, it reverts due to this check `vault.checkSkewMax({additionalSkew: 0})`.
-
-This kind of outcome is absolutely unacceptable for a trading system in the real world. The trading system is effectively misleading the traders in the first place, telling them that the system will execute their withdrawal as they have already verified that the withdrawal will not cause the system's skew ratio to exceed the limit.
-
-All orders must wait for a period before they can be executed, and only one order can be queued for each user at any time. This means that while the withdrawal trade order is in the queue, the users cannot perform any other operations, such as open/adjust position, even if they wish.
-
-After the holding period has passed, the keeper takes the withdrawal trade order and executes it. Only then, the system will tell the users that the system has to invalidate the user's withdrawal trade order (because the system has used the wrong checkSkew formula in the first place). The users might keep repeatedly trying to withdraw and only realize that their withdrawal orders get invalidated much later when executed, not knowing what the underlying issue/bug is.
-
-Lastly, I have already shown the math with real numbers where the checkSkew formula does not detect skew while they should be in the report.
-
-**ydspa**
-
-> Disagree with the escalator that the impact is QA/Low.
-> 
-> NishithPat has made a valid and comprehensive response to the escalations. I would like to add to his response.
-> 
-> The impact of this issue is not just limited to the waste of gas. We must understand that all trading operations (open/adjust/close order, deposit/withdraw) are time-sensitive in the real world.
-> 
-> Let's assume that using the current formula `announceWithdraw`, the withdrawal trade order will be executed because the `longSkewFraction` is not greater than 1.2 (`skewFractionMax`). However, when it is time for its execution using the `executeWithdraw` function, it reverts due to this check `vault.checkSkewMax({additionalSkew: 0})`.
-> 
-> This kind of outcome is absolutely unacceptable for a trading system in the real world. The trading system is effectively misleading the traders in the first place, telling them that the system will execute their withdrawal as they have already verified that the withdrawal will not cause the system's skew ratio to exceed the limit.
-> 
-> All orders must wait for a period before they can be executed, and only one order can be queued for each user at any time. This means that while the withdrawal trade order is in the queue, the users cannot perform any other operations, such as open/adjust position, even if they wish.
-> 
-> After the holding period has passed, the keeper takes the withdrawal trade order and executes it. Only then, the system will tell the users that the system has to invalidate the user's withdrawal trade order (because the system has used the wrong checkSkew formula in the first place). The users might keep repeatedly trying to withdraw and only realize that their withdrawal orders get invalidated much later when executed, not knowing what the underlying issue/bug is.
-> 
-> Lastly, I have already shown the math with real numbers where the checkSkew formula does not detect skew while they should be in the report.
-
-I think the above debate fall into the following sherlock rule:
->8. Opportunity Loss is not considered a loss of funds by Sherlock.
-
-
-And also this issue is not a break of core functionality that make contract useless, therefore LOW is suitable
-
-**NishithPat**
-
-> The users might keep repeatedly trying to withdraw and only realize that their withdrawal orders get invalidated much later when executed, not knowing what the underlying issue/bug is.
-
-This comment by the LSW pretty much sums it up. Users will repeatedly try to call the announce withdraw function, not realizing why their withdrawal gets reverted. Then they don't just spend gas for 1 extra transaction, they do it for several transactions.  They don't have to wait for 1 minute, but they need to wait for several minutes because of the wrong implementation of checkSkewMax in the announceWithdraw function.
-
-Also, think about the case of emergencies when users want to withdraw the underlying assets from the protocol. Because of this improper implementation in the announceWithdraw function, users who are trying to withdraw and get their orders invalidated will try to withdraw several times, not realizing why their orders get invalidated. And when they do realize after several attempts, it will already be too late by then as several minutes would have passed by. In such cases, there would definitely be a loss of funds for the user.
-
-The issue cannot be QA.
-
-**Czar102**
-
-I am siding with the escalation. https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/193#issuecomment-1959803953 also explains the reasoning well.
-
-Planning to accept the escalation and invalidate the issue.
-
-**nevillehuang**
-
-@Czar102 As mentioned by LSW, the max skew intended by protocol is 20%, but because of this issue, it will allow potential bypass. The trading opportunity cost impact is definitely not valid, but I believe the impact highlighted warrants medium severity.
-
-> The purpose of the long max skew (skewFractionMax) is to prevent the FlatCoin holders from being increasingly short. However, the existing controls are not adequate, resulting in the long skew exceeding the long max skew deemed acceptable by the protocol, as shown in the example above.
-
-> When the FlatCoin holders are overly net short, an increase in the collateral price (rETH) leads to a more pronounced decrease in the price of UNIT, amplifying the risk and loss of the FlatCoin holders and increasing the risk of UNIT's price going to 0.
-
-
-
-**santipu03**
-
-@nevillehuang The statement that the long skew will exceed the long max skew is wrong. 
-
-Refer to my escalation [here](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/193#issuecomment-1955045330)
-
-
-**nevillehuang**
-
-@santipu03 Apologies, agree, it will revert [here](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L305), so this issue can be invalid.
-
-**Czar102**
-
-Result:
-Low
-Has duplicates
-
-**sherlock-admin2**
-
-Escalations have been resolved successfully!
-
-Escalation status:
-- [santipu03](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/193/#issuecomment-1955045330): accepted
-- [NishithPat](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/193/#issuecomment-1955687103): rejected
-
-# Issue H-10: Malicious keepers can manipulate the price when executing an order 
+# Issue H-6: Malicious keepers can manipulate the price when executing an order 
 
 Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/194 
 
@@ -2787,12 +1713,16 @@ Escalations have been resolved successfully!
 Escalation status:
 - [0xLogos](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/194/#issuecomment-1956855342): rejected
 
-# Issue H-11: Long trader's deposited margin can be wiped out 
+**rashtrakoff**
+
+We have a PR ready for this but just wanted to touch upon [this](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/194#issuecomment-1951323235) comment. While I agree that the price deviation check can be by-passed, the price staleness check that my comment refers to cannot be by-passed as per my understanding of Pyth price update function. Could you confirm if what I commented makes sense @xiaoming9090 @nevillehuang ?
+
+# Issue H-7: Long trader's deposited margin can be wiped out 
 
 Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/195 
 
 ## Found by 
-0xrobsol, Bony, deepplus, evmboi32, petro1912, santipu\_, shaka, xiaoming90
+0xrobsol, Bony, CL001, Dliteofficial, KingNFT, chaduke, deepplus, evmboi32, juan, ni8mare, petro1912, santipu\_, shaka, vvv, xiaoming90
 ## Summary
 
 Long Trader's deposited margin can be wiped out due to a logic error, leading to a loss of assets.
@@ -2873,7 +1803,7 @@ globalPositions.marginDepositedTotal = newMarginTotal > 0 ? uint256(newMarginTot
 
 **sherlock-admin**
 
-The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/275.
+The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/296.
 
 **midori-fuse**
 
@@ -2974,510 +1904,11 @@ Escalations have been resolved successfully!
 Escalation status:
 - [midori-fuse](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/195/#issuecomment-1955855979): accepted
 
-# Issue H-12: Long traders unable to withdraw their assets 
+**sherlock-admin4**
 
-Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/196 
+The Lead Senior Watson signed off on the fix.
 
-## Found by 
-CL001, shaka, xiaoming90
-## Summary
-
-Whenever the protocol reaches a state where the long trader's profit is larger than LP's stable collateral total, the protocol will be bricked. As a result, the margin deposited and gain of the long traders can no longer be withdrawn and the LPs cannot withdraw their collateral, leading to a loss of assets for the  users.
-
-## Vulnerability Detail
-
-Per Line 97 below, if the collateral balance is less than the tracked balance, the `_getCollateralNet` invariant check will revert.
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/misc/InvariantChecks.sol#L97
-
-```solidity
-File: InvariantChecks.sol
-089:     /// @dev Returns the difference between actual total collateral balance in the vault vs tracked collateral
-090:     ///      Tracked collateral should be updated when depositing to stable LP (stableCollateralTotal) or
-091:     ///      opening leveraged positions (marginDepositedTotal).
-092:     /// TODO: Account for margin of error due to rounding.
-093:     function _getCollateralNet(IFlatcoinVault vault) private view returns (uint256 netCollateral) {
-094:         uint256 collateralBalance = vault.collateral().balanceOf(address(vault));
-095:         uint256 trackedCollateral = vault.stableCollateralTotal() + vault.getGlobalPositions().marginDepositedTotal;
-096: 
-097:         if (collateralBalance < trackedCollateral) revert FlatcoinErrors.InvariantViolation("collateralNet");
-098: 
-099:         return collateralBalance - trackedCollateral;
-100:     }
-```
-
-Assume that:
-
-- Bob's long position: Margin = 50 ETH
-- Alice's LP: Deposited = 50 ETH
-- Collateral Balance = 100 ETH
-- Tracked Balance = 100 ETH (Stable Collateral Total = 50 ETH, Margin Deposited Total = 50 ETH)
-
-Assume that Bob's long position gains a profit of 51 ETH.
-
-The following actions will trigger the `updateGlobalPositionData` function internally: executeOpen, executeAdjust, executeClose, and liquidation.
-
-When the ` FlatcoinVault.updateGlobalPositionData` function is triggered to update the global position data:
-
-```solidity
-profitLossTotal = 51 ETH (gain by long)
-
-newMarginDepositedTotal = marginDepositedTotal + marginDelta + profitLossTotal
-newMarginDepositedTotal = 50 ETH + 0 + 51 ETH = 101 ETH
-
-_updateStableCollateralTotal(-51 ETH)
-newStableCollateralTotal = stableCollateralTotal + _stableCollateralAdjustment
-newStableCollateralTotal = 50 ETH + (-51 ETH) = -1 ETH
-stableCollateralTotal = (newStableCollateralTotal > 0) ? newStableCollateralTotal : 0;
-stableCollateralTotal = 0
-```
-
-In this case, the state becomes as follows:
-
-- Collateral Balance = 100 ETH
-- Tracked Balance = 101 ETH (Stable Collateral Total = 0 ETH, Margin Deposited Total = 101 ETH)
-
-Notice that the Collateral Balance and Tracked Balance are no longer in sync. As such, the revert will occur when the `_getCollateralNet` invariant checks are performed.
-
-Whenever the protocol reaches a state where the long trader's profit is larger than LP's stable collateral total, this issue will occur, and the protocol will be bricked. The margin deposited and gain of the long traders can no longer be withdrawn from the protocol. The LPs also cannot withdraw their collateral.
-
-The reason is that the `_getCollateralNet` invariant checks are performed in all functions of the protocol that can be accessed by users (listed below):
-
-- Deposit
-- Withdraw
-- Open Position
-- Adjust Position
-- Close Position
-- Liquidate
-
-## Impact
-
-Loss of assets for the users. Since the protocol is bricked due to revert, the long traders are unable to withdraw their deposited margin and gain and the LPs cannot withdraw their collateral.
-
-## Code Snippet
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/misc/InvariantChecks.sol#L97
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-Currently, when the loss of the LP is more than the existing `stableCollateralTotal`, the loss will be capped at zero, and it will not go negative. In the above example, the `stableCollateralTotal` is 50, and the loss is 51. Thus, the `stableCollateralTotal` is set to zero instead of -1.
-
-The loss of LP and the gain of the trader should be aligned or symmetric. However, this is not the case in the current implementation. In the above example, the gain of traders is 51, while the loss of LP is 50, which results in a discrepancy here.
-
-To fix the issue, the loss of LP and the gain of the trader should be aligned. For instance, in the above example, if the loss of LP is capped at 50, then the profit of traders must also be capped at 50.
-
-Following is a high-level logic of the fix:
-
-```solidity
-If (profitLossTotal > stableCollateralTotal): // (51 > 50) => True
-	profitLossTotal = stableCollateralTotal // profitLossTotal = 50
-	
-newMarginDepositedTotal = marginDepositedTotal + marginDelta + profitLossTotal // 50 + 0 + 50 = 100
-	
-newStableCollateralTotal = stableCollateralTotal + (-profitLossTotal) // 50 + (-50) = 0
-stableCollateralTotal = (newStableCollateralTotal > 0) ? newStableCollateralTotal : 0; // stableCollateralTotal = 0
-```
-
-The comment above verifies that the logic is working as intended.
-
-
-
-## Discussion
-
-**sherlock-admin**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**takarez** commented:
->  valid: high(6)
-
-
-
-**ydspa**
-
-Escalate
-
-This should be a medium issue, as the likelihood is extreme low due to strict external market conditions
->Flatcoin can be net short and ETH goes up 5x in a short period of time, potentially leading to UNIT going to 0.
-https://audits.sherlock.xyz/contests/132
-
-Meet sherlock's rule for Medium
->Causes a loss of funds but requires certain external conditions or specific states
-
-But not meet the rule for High
->Definite loss of funds without (extensive) limitations of external conditions
-
-**sherlock-admin2**
-
-> Escalate
-> 
-> This should be a medium issue, as the likelihood is extreme low due to strict external market conditions
-> >Flatcoin can be net short and ETH goes up 5x in a short period of time, potentially leading to UNIT going to 0.
-> https://audits.sherlock.xyz/contests/132
-> 
-> Meet sherlock's rule for Medium
-> >Causes a loss of funds but requires certain external conditions or specific states
-> 
-> But not meet the rule for High
-> >Definite loss of funds without (extensive) limitations of external conditions
-
-You've created a valid escalation!
-
-To remove the escalation from consideration: Delete your comment.
-
-You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
-
-**xiaoming9090**
-
-Disagree with the escalation. The following point in the escalation is simply a remark by the protocol team stating that if the ETH goes up 5x, the value of UNIT token will go down to zero
-
-> Flatcoin can be net short and ETH goes up 5x in a short period of time, potentially leading to UNIT going to 0.
-> https://audits.sherlock.xyz/contests/132
-
-It has nothing to do with preventing the protocol from reaching a state where the long trader's profit is larger than LP's stable collateral total. 
-
-On the other hand, this point made by the protocol team actually reinforces the case I made in the report. The point by the protocol team highlighted the fact that the ETH can go up significantly over a short period of time. When this happens,  the long trader's profit will be large. Thus, it will cause the protocol to reach a state where the long trader's profit is larger than LP's stable collateral total, which triggers this issue. When this happens, the protocol will be bricked, thus justified for a High.
-
-Also, the requirement for High is "Definite loss of funds without (extensive) limitations of external conditions". This issue can occur without extensive external conditions as only one condition, which is the price of the ETH goes up significantly, is needed to trigger the bug. Thus, it meets the requirement of a High issue.
-
-**Czar102**
-
-@xiaoming9090 aren't protocol risk parameters set not to allow the long traders' profits to be larger than LP funds?
-
-**xiaoming9090**
-
-> @xiaoming9090 aren't protocol risk parameters set not to allow the long traders' profits to be larger than LP funds?
-
-@Czar102 The risk parameter I'm aware of is the `skewFractionMax` parameter, which prevents the system from having too many long positions compared to short positions. The maximum ratio of long to short position size is 1.2 (120% long: 100% long) during the audit. The purpose of limiting the number of long positions is to avoid the long side wiping out the value of the short side (LP) too quickly when the ETH price goes up.
-
-However, I'm unaware of any restrictions constraining long traders' profits. The long traders' profits will increase along with the increase in ETH price.
-
-**Czar102**
-
-So, the price needs to go up 5x in order to trigger this issue?
-
-**xiaoming9090**
-
-@Czar102 Depending on the `skewFractionMax` parameter being configured at any single point of time. The owner can change this value via the `setSkewFractionMax` function. The higher the value is, the smaller the price increase needed to trigger the issue.
-
-If the `skewFractionMax` is set to 20%, 5x will cause the LP's UNIT holding to drop to zero. Thus, slightly more than 5x will trigger this issue.
-Sidenote: The 20% is chosen in this report since it was mentioned in the contest's README 
-
-**Czar102**
-
-I think this is a fair assumption to have these values set so that other positions will practically never go into negative values – so this bug will practically never be triggered. Hence, the assumptions for this issue to be triggered are quite extensive.
-
-Planning to accept the escalation and consider this issue a Medium severity one.
-
-**0xjuaan**
-
-So it seems that in order for this issue to be triggered, ETH has to rise 5x in a short period of time. 
-
-However in the 'known issues/acceptable risks that should not result in a valid finding' section of the contest README, it says:
-
-> theoretically, if ETH price increases by 5x in a short period of time whilst the flatcoin holders are 20% short, it's possible for flatcoin value to go to 0. This scenario is deemed to be extremely unlikely and the funding rate is able to move quickly enough to bring the flatcoin holders back to delta neutral.
-
-Since that scenario is required to trigger this issue, this issue should not be deemed as valid. 
-
-**xiaoming9090**
-
-> So it seems that in order for this issue to be triggered, ETH has to rise 5x in a short period of time.
-> 
-> However in the 'known issues/acceptable risks that should not result in a valid finding' section of the contest README, it says:
-> 
-> > theoretically, if ETH price increases by 5x in a short period of time whilst the flatcoin holders are 20% short, it's possible for flatcoin value to go to 0. This scenario is deemed to be extremely unlikely and the funding rate is able to move quickly enough to bring the flatcoin holders back to delta neutral.
-> 
-> Since that scenario is required to trigger this issue, this issue should not be deemed as valid.
-
-The README mentioned that the team is aware of a scenario where the price can go up significantly, leading the LP's Flatcoin value to go to 0. However, that does not mean that the team is aware of other potential consequences when this scenario happens.
-
-**0xjuaan**
-
-But surely if the sponsor deemed that the very rapid 5x price increase of ETH is extremely unlikely, that means that its an acceptable risk that they take on. So any issue which relies on that scenario is a part of that same acceptable risk, so shouldn't be valid right?
-
-The sponsor clarified why they accept this risk and issues relating to this scenario shouldn't be reported, [in this public discord message](https://discord.com/channels/812037309376495636/1199005620536356874/1202614374703824927)
-
-> Hello everyone. I believe some of you guys might have a doubt whether UNIT going to 0 is an issue or not. I believe it was mentioned that UNIT going to 0 is a known behaviour of the system but the reason might not be clear as to why. If the collateral price increases by let's say 5x (in case the skew limit is 120%), the entire short side (UNIT LPs) will be liquidated (though not liquidated in the same way as how leveraged longs are). The system will most likely not be able to recover as longs can simply close their positions and the take away the collateral. The hope is that this scenario doesn't play out in the future due to informed LPs and funding rate and other incentives but we know this is crypto and anything is possible here. Just wanted to clarify this so that we don't get this as a reported issue.
-
-
-**xiaoming9090**
-
-The team is aware and has accepted that FlatCoin's value (short-side/LP) will go to zero when the price goes up significantly.
-However, that is different from this report where the long traders are unable to withdraw when the price goes up significantly.
-
-These are two separate issues, and the root causes are different. The reason why the FlatCoin's value can go to zero is due to the design of the protocol where the short side can lose to the long side. However, this report and its duplicated reports highlighted a bug in the existing implementation that could lead to long traders being unable to withdraw.
-
-
-
-**nevillehuang**
-
-> I think this is a fair assumption to have these values set so that other positions will practically never go into negative values – so this bug will practically never be triggered. Hence, the assumptions for this issue to be triggered are quite extensive.
-> 
-> Planning to accept the escalation and consider this issue a Medium severity one.
-
-Agree to downgrade to medium severity based on dependency of large price increases.
-
-**Czar102**
-
-Based on https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/196#issuecomment-1970315654, still planning to consider this a valid Medium.
-
-**Czar102**
-
-Result:
-Medium
-Has duplicates
-
-**sherlock-admin2**
-
-Escalations have been resolved successfully!
-
-Escalation status:
-- [ydspa](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/196/#issuecomment-1955885947): accepted
-
-# Issue H-13: Losses of some long traders can eat into the margins of others 
-
-Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/198 
-
-## Found by 
-xiaoming90
-## Summary
-
-The losses of some long traders can eat into the margins of others, resulting in those affected long traders being unable to withdraw their margin and profits, leading to a loss of assets for the long traders.
-
-## Vulnerability Detail
-
-At $T0$, the current price of ETH is \$1000 and assume the following state:
-
-| Alice's Long Position 1                                     | Bob's Long Position 2                                       | Charles (LP)     |
-| ------------------------------------------------------------ | ------------------------------------------------------------ | ---------------- |
-| Position Size = 6 ETH<br />Margin = 3 ETH<br />Last Price (entry price) = \$1000 | Position Size = 6 ETH<br />Margin = 5 ETH<br />Last Price (entry price) = \$1000 | Deposited 12 ETH |
-
-- The `stableCollateralTotal` will be 12 ETH
-- The `GlobalPositions.marginDepositedTotal` will be 8 ETH (3 + 5)
-- The `globalPosition.sizeOpenedTotal` will be 12 ETH (6 + 6)
-- The total balance of ETH in the vault is 20 ETH. 
-
-
-As this is a perfectly hedged market, the accrued fee will be zero, and ignored in this report for simplicity's sake.
-
-At $T1$, the price of the ETH drops from \$1000 to \$600. At this point, the settle margin of both long positions will be as follows:
-
-| Alice's Long Position 1                                     | Bob's Long Position 2                                       |
-| ------------------------------------------------------------ | ------------------------------------------------------------ |
-| priceShift = Current Price - Last Price = \$600 - \$1000 = -\$400<br />PnL = (Position Size * priceShift) / Current Price = (6 ETH * -\$400) / \$400 = -4 ETH<br />settleMargin = marginDeposited + PnL = 3 ETH + (-4 ETH) = -1 ETH | PnL = -4 ETH (Same calculation)<br />settleMargin = marginDeposited + PnL = 5 ETH + (-4 ETH) = 1 ETH |
-
-Alice's long position is underwater (settleMargin < 0), so it can be liquidated. When the liquidation is triggered, it will internally call the `updateGlobalPositionData` function. Even if the liquidation does not occur, any of the following actions will also trigger the `updateGlobalPositionData` function internally:
-
-- executeOpen
-- executeAdjust
-- executeClose
-
-The purpose of the `updateGlobalPositionData` function is to update the global position data. This includes getting the total profit loss of all long traders (Alice & Bob), and updating the margin deposited total + stable collateral total accordingly.
-
-Assume that the `updateGlobalPositionData` function is triggered by one of the above-mentioned functions. Line 179 below will compute the total PnL of all the opened long positions.
-
-```solidity
-priceShift = current price - last price
-priceShift = $600 - $1000 = -$400
-
-profitLossTotal = (globalPosition.sizeOpenedTotal * priceShift) / current price
-profitLossTotal = (12 ETH * -$400) / $600
-profitLossTotal = -8 ETH
-```
-
-The `profitLossTotal` is -8 ETH. This is aligned with what we have calculated earlier, where Alice's PnL is -4 ETH and Bob's PnL is -4 ETH (total = -8 ETH loss). 
-
-At Line 184 below, the `newMarginDepositedTotal` will be set to as follows (ignoring the `_marginDelta` for simplicity's sake)
-
-```solidity
-newMarginDepositedTotal = _globalPositions.marginDepositedTotal + _marginDelta + profitLossTotal
-newMarginDepositedTotal = 8 ETH + 0 + (-8 ETH) = 0 ETH
-```
-
-What happened above is that 8 ETH collateral is deducted from the long traders and transferred to LP. When `newMarginDepositedTotal` is zero, this means that the long trader no longer owns any collateral. This is incorrect, as Bob's position should still contribute 1 ETH remaining margin to the long trader's pool.
-
-Let's review Alice's Long Position 1: Her position's settled margin is -1 ETH. When the settled margin is -ve then the LPs have to bear the cost of loss per the comment [here](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LiquidationModule.sol#L139). However, in this case, we can see that it is Bob (long trader) instead of LPs who are bearing the cost of Alice's loss, which is incorrect.
-
-Let's review Bob's Long Position 2: His position's settled margin is 1 ETH. If his position's liquidation margin is $LM$, Bob should be able to withdraw $1\  ETH - LM$ of his position's margin. However, in this case, the `marginDepositedTotal` is already zero, so there is no more collateral left on the long trader pool for Bob to withdraw, which is incorrect.
-
-With the current implementation, the losses of some long traders can eat into the margins of others, resulting in those affected long traders being unable to withdraw their margin and profits.
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L173
-
-```solidity
-being File: FlatcoinVault.sol
-173:     function updateGlobalPositionData(
-174:         uint256 _price,
-175:         int256 _marginDelta,
-176:         int256 _additionalSizeDelta
-177:     ) external onlyAuthorizedModule {
-178:         // Get the total profit loss and update the margin deposited total.
-179:         int256 profitLossTotal = PerpMath._profitLossTotal({globalPosition: _globalPositions, price: _price});
-180: 
-181:         // Note that technically, even the funding fees should be accounted for when computing the margin deposited total.
-182:         // However, since the funding fees are settled at the same time as the global position data is updated,
-183:         // we can ignore the funding fees here.
-184:         int256 newMarginDepositedTotal = int256(_globalPositions.marginDepositedTotal) + _marginDelta + profitLossTotal;
-185: 
-186:         // Check that the sum of margin of all the leverage traders is not negative.
-187:         // Rounding errors shouldn't result in a negative margin deposited total given that
-188:         // we are rounding down the profit loss of the position.
-189:         // If anything, after closing the last position in the system, the `marginDepositedTotal` should can be positive.
-190:         // The margin may be negative if liquidations are not happening in a timely manner.
-191:         if (newMarginDepositedTotal < 0) {
-192:             revert FlatcoinErrors.InsufficientGlobalMargin();
-193:         }
-194: 
-195:         _globalPositions = FlatcoinStructs.GlobalPositions({
-196:             marginDepositedTotal: uint256(newMarginDepositedTotal),
-197:             sizeOpenedTotal: (int256(_globalPositions.sizeOpenedTotal) + _additionalSizeDelta).toUint256(),
-198:             lastPrice: _price
-199:         });
-200: 
-201:         // Profit loss of leverage traders has to be accounted for by adjusting the stable collateral total.
-202:         // Note that technically, even the funding fees should be accounted for when computing the stable collateral total.
-203:         // However, since the funding fees are settled at the same time as the global position data is updated,
-204:         // we can ignore the funding fees here
-205:         _updateStableCollateralTotal(-profitLossTotal);
-206:     }
-```
-
-## Impact
-
-Loss of assets for the long traders as the losses of some long traders can eat into the margins of others, resulting in those affected long traders being unable to withdraw their margin and profits.
-
-## Code Snippet
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L173
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-The following are the two issues identified earlier and the recommended fixes:
-
-**Issue 1**
-
-> Let's review Alice's Long Position 1: Her position's settled margin is -1 ETH. When the settled margin is -ve then the LPs have to bear the cost of loss per the comment [here](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LiquidationModule.sol#L139). However, in this case, we can see that it is Bob (long trader) instead of LPs who are bearing the cost of Alice's loss, which is incorrect.
-
-Fix: Alice -1 ETH loss should be borne by the LP, not the long traders. The stable collateral total of LP should be deducted by 1 ETH to bear the cost of the loss.
-
-**Issue 2**
-
-> Let's review Bob's Long Position 2: His position's settled margin is 1 ETH. If his position's liquidation margin is $LM$, Bob should be able to withdraw $1\  ETH - LM$ of his position's margin. However, in this case, the `marginDepositedTotal` is already zero, so there is no more collateral left on the long trader pool for Bob to withdraw, which is incorrect.
-
-Fix: Bob should be able to withdraw $1\  ETH - LM$ of his position's margin regardless of the PnL of other long traders. Bob's margin should be isolated from Alice's loss.
-
-
-
-## Discussion
-
-**sherlock-admin**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**takarez** commented:
->  valid: high(7)
-
-
-
-**0xLogos**
-
-Escalate 
-
-Invalid (maybe medium if I'm missing something, clearly not high)
-
-Isn't described scenario is just a speculation? Why Alice's long position was not liquidated earlier? Even if price dropped that significant in ~1 minute there is still enough time to liquidate.
-
-**sherlock-admin2**
-
-> Escalate 
-> 
-> Invalid (maybe medium if I'm missing something, clearly not high)
-> 
-> Isn't described scenario is just a speculation? Why Alice's long position was not liquidated earlier? Even if price dropped that significant in ~1 minute there is still enough time to liquidate.
-
-You've created a valid escalation!
-
-To remove the escalation from consideration: Delete your comment.
-
-You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
-
-**securitygrid**
-
-The judge should consider whether the scenario or the assumed system state (the value of some variables) described in a report will actually occur or not. This is important.
-
-The scenario described in this report is unlikely to occur. Because Alice's position should have been liquidated before T1, why did it have to wait until bad debts occurred before it was liquidated?
-If the protocol has only one keeper, then such a scenario may occur when the keeper goes down. However, the protocol has multiple keepers: from third parties and from the protocol itself. It is impossible for all keepers going down.
-
-**xiaoming9090**
-
-The issue stands valid and remains high as it leads to a loss of assets for the long traders, as described in the "impact" section of the report. 
-
-The scenario is a valid example to demonstrate the issue on hand. The points related to the timing of the liquidation in the escalation are irrelevant, as the bugs will be triggered when liquidation is executed.
-
-Also, we cannot expect the liquidator keeper always to liquidate the accounts before the settled margin falls below zero (bad debt) under all circumstances due to many reasons (e.g., the price dropped too fast, delay due to too many TX queues at sequencer, time delay between the oracle and market price)
-
-The scenario where the settled margin falls below zero (bad debt) is absolutely something that will happen in the real world. In the code of the liquidation function [here](https://github.com/sherlock-audit/2023-12-flatmoney/blob/bba4f077a64f43fbd565f8983388d0e985cb85db/flatcoin-v1/src/LiquidationModule.sol#L139), even the protocol expected that the settled margin could fall below zero (bad debt) under some conditions and implement logic to handle this scenario.
-
-```solidity
-// If the settled margin is -ve then the LPs have to bear the cost.
-// Adjust the stable collateral total to account for user's profit/loss and the negative margin.
-// Note: We are adding `settledMargin` and `profitLoss` instead of subtracting because of their sign (which will be -ve).
-vault.updateStableCollateralTotal(settledMargin - positionSummary.profitLoss);
-```
-
-#
-
-**Czar102**
-
-Would like sponsors to comment on this issue @D-Ig @itsermin @rashtrakoff – is it unintended?
-@nevillehuang any thoughts?
-
-Given that this occurs on accrual of bad debt, I think it should be classified at most as a Medium severity issue.
-
-**rashtrakoff**
-
-The old math (that is math being used in the audit version of contracts) had this side effect. The new math fixes this along with other issues.
-
-**Czar102**
-
-Thank you @rashtrakoff.
-
-Planning to accept the escalation and consider this a Medium severity issue.
-
-**nevillehuang**
-
-> Thank you @rashtrakoff.
-> 
-> Planning to accept the escalation and consider this a Medium severity issue.
-
-Agree to downgrade to medium severity
-
-**Czar102**
-
-Result:
-Medium
-Unique
-
-**sherlock-admin2**
-
-Escalations have been resolved successfully!
-
-Escalation status:
-- [0xLogos](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/198/#issuecomment-1956807320): accepted
-
-**sherlock-admin**
-
-The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/266.
-
-# Issue H-14: Trade fees can be avoided in limit orders 
+# Issue H-8: Trade fees can be avoided in limit orders 
 
 Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/212 
 
@@ -3838,7 +2269,1530 @@ Escalation status:
 - [ydspa](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/212/#issuecomment-1955898121): rejected
 - [xiaoming9090](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/212/#issuecomment-1959561951): rejected
 
-# Issue H-15: Oracle can return different prices in same transaction 
+**sherlock-admin4**
+
+The Lead Senior Watson signed off on the fix.
+
+# Issue M-1: Fees are ignored when checks skew max in Stable Withdrawal /  Leverage Open / Leverage Adjust 
+
+Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/92 
+
+## Found by 
+HSP
+## Summary
+Fees are ignored when checks skew max in Stable Withdrawal / Leverage Open / Leverage Adjust.
+
+## Vulnerability Detail
+When user [withdrawal from the stable LP](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/StableModule.sol#L96-L100), vault **total stable collateral** is updated:
+```solidity
+        vault.updateStableCollateralTotal(-int256(_amountOut));
+```
+Then **_withdrawFee** is calculated and [checkSkewMax(...)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L296) function is called to ensure that the system will not be too skewed towards longs:
+```solidity
+            // Apply the withdraw fee if it's not the final withdrawal.
+            _withdrawFee = (stableWithdrawFee * _amountOut) / 1e18;
+
+            // additionalSkew = 0 because withdrawal was already processed above.
+            vault.checkSkewMax({additionalSkew: 0});
+```
+At the end of the execution, vault collateral is settled again with **withdrawFee**, keeper receives **keeperFee** and `(amountOut - totalFee)` amount of collaterals are transferred to the user:
+```solidity
+        // include the fees here to check for slippage
+        amountOut -= totalFee;
+
+        if (amountOut < stableWithdraw.minAmountOut)
+            revert FlatcoinErrors.HighSlippage(amountOut, stableWithdraw.minAmountOut);
+
+        // Settle the collateral
+        vault.updateStableCollateralTotal(int256(withdrawFee)); // pay the withdrawal fee to stable LPs
+        vault.sendCollateral({to: msg.sender, amount: order.keeperFee}); // pay the keeper their fee
+        vault.sendCollateral({to: account, amount: amountOut}); // transfer remaining amount to the trader
+```
+The `totalFee` is composed of keeper fee and withdrawal fee:
+```solidity
+        uint256 totalFee = order.keeperFee + withdrawFee;
+```
+This means withdrawal fee is still in the vault, however this fee is ignored when checks skew max and protocol may revert on a safe withdrawal. Consider the following scenario:
+1. **skewFractionMax** is `120%` and **stableWithdrawFee** is `1%`;
+2. Alice deposits `100` collateral and Bob opens a leverage position with size `100`;
+3. At the moment, there is `100` collaterals in the Vault, **skew** is `0` and **skew fraction** is `100%`;
+4. Alice tries to withdraw `16.8` collaterals,  **withdrawFee** is `0.168`, after withdrawal, it is expected that there is `83.368` stable collaterals in the Vault, so **skewFraction** should be `119.5%`, which is less than **skewFractionMax**;
+5. However, the withdrawal will actually fail because when protocol checks skew max, **withdrawFee** is ignored and the **skewFraction** turns out to be `120.19%`, which is higher than **skewFractionMax**.
+
+The same issue may occur when protocol executes a [leverage open](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L80-L84) and [leverage adjust](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L147-L151), in both executions, **tradeFee**  is ignored when checks skew max.
+
+Please see the test codes:
+```solidity
+    function test_audit_withdraw_fee_ignored_when_checks_skew_max() public {
+        // skewFractionMax is 120%
+        uint256 skewFractionMax = vaultProxy.skewFractionMax();
+        assertEq(skewFractionMax, 120e16);
+
+        // withdraw fee is 1%
+        vm.prank(vaultProxy.owner());
+        stableModProxy.setStableWithdrawFee(1e16);
+
+        uint256 collateralPrice = 1000e8;
+
+        uint256 depositAmount = 100e18;
+        announceAndExecuteDeposit({
+            traderAccount: alice,
+            keeperAccount: keeper,
+            depositAmount: depositAmount,
+            oraclePrice: collateralPrice,
+            keeperFeeAmount: 0
+        });
+
+        uint256 additionalSize = 100e18;
+        announceAndExecuteLeverageOpen({
+            traderAccount: bob,
+            keeperAccount: keeper,
+            margin: 50e18,
+            additionalSize: 100e18,
+            oraclePrice: collateralPrice,
+            keeperFeeAmount: 0
+        });
+
+        // After leverage Open, skew is 0
+        int256 skewAfterLeverageOpen = vaultProxy.getCurrentSkew();
+        assertEq(skewAfterLeverageOpen, 0);
+        // skew fraction is 100%
+        uint256 skewFractionAfterLeverageOpen = getLongSkewFraction();
+        assertEq(skewFractionAfterLeverageOpen, 1e18);
+
+        // Note: comment out `vault.checkSkewMax({additionalSkew: 0})` and below lines to see the actual skew fraction
+        // Alice withdraws 16.8 collateral
+        // uint256 aliceLpBalance = stableModProxy.balanceOf(alice);
+        // announceAndExecuteWithdraw({
+        //     traderAccount: alice, 
+        //     keeperAccount: keeper, 
+        //     withdrawAmount: 168e17, 
+        //     oraclePrice: collateralPrice, 
+        //     keeperFeeAmount: 0
+        // });
+
+        // // After withdrawal, the actual skew fraction is 119.9%, less than skewFractionMax
+        // uint256 skewFactionAfterWithdrawal = getLongSkewFraction();
+        // assertEq(skewFactionAfterWithdrawal, 1199501007580846367);
+
+        // console2.log(WETH.balanceOf(address(vaultProxy)));
+    }
+```
+
+## Impact
+Protocol may wrongly prevent a Stable Withdrawal / Leverage Open / Leverage Adjust even if the execution is essentially safe.
+
+## Code Snippet
+https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/StableModule.sol#L130
+https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L101
+https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L166
+
+## Tool used
+Manual Review
+
+## Recommendation
+Include withdrawal fee / trade fee when check skew max.
+
+
+
+## Discussion
+
+**sherlock-admin**
+
+1 comment(s) were left on this issue during the judging contest.
+
+**takarez** commented:
+>  invalid
+
+
+
+**0xLogos**
+
+Escalate 
+
+Low. Exceeding skewFractionMax is possible only by a fraction of a percent 
+
+**sherlock-admin2**
+
+> Escalate 
+> 
+> Low. Exceeding skewFractionMax is possible only by a fraction of a percent 
+
+You've created a valid escalation!
+
+To remove the escalation from consideration: Delete your comment.
+
+You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
+
+**santipu03**
+
+Agree with @0xLogos. The withdrawal fee is a tiny amount compared to the total deposited collateral, therefore the impact will be almost imperceptible. The severity should be LOW. 
+
+**0xhsp**
+
+This issue is valid.
+
+The fee maybe a tiny amount compared to the total deposited collateral, but **the impact is significant to individual users**.
+
+Let's assume **stableCollateralTotal** is 1000 ether, **stableWithdrawFee** is 1%, **skewFractionMax** is 120% and current **skewFraction** is 60%.
+
+> If withdrawal fee is ignored in the calculation of shew fraction, **withdrawAmount** is calculated as:
+
+<img width="508" alt="1" src="https://github.com/sherlock-audit/2023-12-flatmoney-judging/assets/155340699/45adbabb-49fc-4a0e-9414-ada424ba0091">
+
+> If withdrawal fee is considered in the calculation of shew fraction, **withdrawAmount** is calculated as:
+
+<img width="702" alt="2" src="https://github.com/sherlock-audit/2023-12-flatmoney-judging/assets/155340699/e557c8b9-6bfa-40df-ac20-69bcc955c43f">
+
+We can notice that **5 ether less** collaterals ethers are withdrawable if fee is ignored. Just be realistic, individual user is most likely to deposit a tiny amount of collaterals, this means **many users are unable to withdraw any of their collaterals even if it is safe to do so**.
+
+Similarly, since **tradeFee** is ignored when protocol checks a leverage open/adjustment, **many traders would be wrongly prevented from opening/adjusting any positions**.
+
+
+**0xLogos**
+
+In first pic after withdrawing for example 300 eth, fee for that amount will be included in the next withdrawal and so forth so eventually all 505 eth can be withdrawn. Note that it's not work around, just how things work in most cases.
+
+**0xhsp**
+
+It's not about how much user can withdraw but if user can withdraw whenever it is safe. 
+
+Given after withdrawing for example 300 eth, users expect to be able to withdraw 353.5 ether more but are only allowed 350 ether due to the issue.
+
+Incorrect checking is a high risk to the protocol, it is difficult to predict how users will operate but it would eventually cause huge impact if we ignore the risk.
+
+**santipu03**
+
+The margin error on the calculation of `checkSkewMax` will be equal to the `tradeFee` on that operation. When the operation is using a huge amount (500 ETH), the margin error of the calculation will be of 5 ETH (assuming a 1% `tradeFee`). But if 10 users withdraw 50 ETH each, the margin error will only be 0.5 ETH on the last withdrawal.
+
+To trigger this issue with a non-trivial margin error, it requires a user that withdraws collateral (or creates or adjusts a position) with a huge amount compared to the total collateral deposited. 
+
+Given the low probability of this issue happening with a non-trivial margin error and the impact being medium/low, I'd consider the overall severity of this issue to be LOW.
+
+**0xhsp**
+
+The probability should be medium as you cannot predict the wild market, the impact can be high since usera may suffer a loss due to price fluncation if they cannot withdraw in time. So it's fair to say the servrity is medium.
+
+**sherlock-admin**
+
+The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/280.
+
+**Evert0x**
+
+It seems to me that the issue described can negatively affect users and breaks core contract functionality in specific (but not unrealistic) scenarios https://docs.sherlock.xyz/audits/judging/judging#v.-how-to-identify-a-medium-issue
+
+Tentatively planning to reject the escalation and keep the issue state as is, but will revisit it later. 
+
+**Evert0x**
+
+Planning to continue with my judgment as stated in the comment above. 
+
+**Czar102**
+
+Result:
+Medium
+Unique
+
+**sherlock-admin2**
+
+Escalations have been resolved successfully!
+
+Escalation status:
+- [0xLogos](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/92/#issuecomment-1956105454): rejected
+
+**sherlock-admin4**
+
+The Lead Senior Watson signed off on the fix.
+
+# Issue M-2: In LeverageModule.executeOpen/executeAdjust, vault.checkSkewMax should be called after updating the global position data 
+
+Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/143 
+
+## Found by 
+ge6a, jennifer37, nobody2018, santipu\_
+## Summary
+
+[[checkSkewMax](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L296)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L296) is used to assert that the system will not be too skewed towards longs after additional skew is added. However, the `stableCollateralTotal` used by this function is a variable that will [[be updated by updateGlobalPositionData](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L205)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L205). Therefore, `checkSkewMax` should be executed after `updateGlobalPositionData`. Otherwise, there is no guarantee whether newly opened positions will make the system more skew towards long side.
+
+## Vulnerability Detail
+
+```solidity
+File: flatcoin-v1\src\LeverageModule.sol
+080:     function executeOpen(
+081:         address _account,
+082:         address _keeper,
+083:         FlatcoinStructs.Order calldata _order
+084:     ) external whenNotPaused onlyAuthorizedModule returns (uint256 _newTokenId) {
+......
+101:->       vault.checkSkewMax({additionalSkew: announcedOpen.additionalSize});
+102: 
+103:         {
+104:             // The margin change is equal to funding fees accrued to longs and the margin deposited by the trader.
+105:->           vault.updateGlobalPositionData({
+106:                 price: entryPrice,
+107:                 marginDelta: int256(announcedOpen.margin),
+108:                 additionalSizeDelta: int256(announcedOpen.additionalSize)
+109:             });
+......
+140:     }
+```
+
+L101, [[vault.checkSkewMax](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L296-L307)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L296-L307) internally calculates `longSkewFraction` by the formula `((_globalPositions.sizeOpenedTotal + _additionalSkew) * 1e18) / stableCollateralTotal`. This function guarantees that `longSkewFraction` will not exceed `skewFractionMax` ([[120%](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/scripts/deployment/configs/FlatcoinVault.config.js#L9)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/scripts/deployment/configs/FlatcoinVault.config.js#L9)).
+
+However, `stableCollateralTotal` will [[be updated in updateGlobalPositionData](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L205)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L205).
+
+- When `profitLossTotal` is positive value, then `stableCollateralTotal` will decrease.
+- When `profitLossTotal` is negative value, then `stableCollateralTotal` will increase.
+
+Assume the following:
+
+```data
+stableCollateralTotal = 90e18
+_globalPositions = {  
+    sizeOpenedTotal: 100e18,  
+    lastPrice: 1800e18,  
+}
+A new position is to be opened with additionalSize = 5e18.  
+fresh price=2000e18
+```
+
+We explain it in two situations:
+
+1. `checkSkewMax` is called before `updateGlobalPositionData`.
+
+```data
+longSkewFraction = (_globalPositions.sizeOpenedTotal + additionalSize) * 1e18 / stableCollateralTotal 
+                 = (100e18 + 5e18) * 1e18 / 90e18 
+                 = 1.16667e18 < skewFractionMax(1.2e18)
+so checkSkewMax will be passed.
+```
+
+2. `checkSkewMax` is called after `updateGlobalPositionData`.
+
+```data
+In updateGlobalPositionData:  
+PerpMath._profitLossTotal calculates
+profitLossTotal = _globalPositions.sizeOpenedTotal * (int256(price) - int256(globalPosition.lastPrice)) / int256(price) 
+                = 100e18 * (2000e18 - 1800e18) / 2000e18 = 100e18 * 200e18 /2000e18 
+                = 10e18 
+_updateStableCollateralTotal(-profitLossTotal) will deduct 10e18 from stableCollateralTotal. 
+so stableCollateralTotal = 90e18 - 10e18 = 80e18.  
+
+Now, checkSkewMax is called:  
+longSkewFraction = (_globalPositions.sizeOpenedTotal + additionalSize) * 1e18 / stableCollateralTotal 
+                 = (100e18 + 5e18) * 1e18 / 80e18 
+                 = 1.3125e18 > skewFractionMax(1.2e18)
+```
+
+Therefore, **this new position should not be allowed to open, as this will only make the system more skewed towards the long side**.
+
+## Impact
+
+The `stableCollateralTotal` used by `checkSkewMax` is the value of the total profit that has not yet been settled, which is old value. In this way, when the price of collateral rises, it will cause the system to be more skewed towards the long side.
+
+## Code Snippet
+
+https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L101-L109
+
+https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L166
+
+## Tool used
+
+Manual Review
+
+## Recommendation
+
+```solidity
+File: flatcoin-v1\src\LeverageModule.sol
+080:     function executeOpen(
+081:         address _account,
+082:         address _keeper,
+083:         FlatcoinStructs.Order calldata _order
+084:     ) external whenNotPaused onlyAuthorizedModule returns (uint256 _newTokenId) {
+......
+101:---      vault.checkSkewMax({additionalSkew: announcedOpen.additionalSize});
+102: 
+103:         {
+104:             // The margin change is equal to funding fees accrued to longs and the margin deposited by the trader.
+105:             vault.updateGlobalPositionData({
+106:                 price: entryPrice,
+107:                 marginDelta: int256(announcedOpen.margin),
+108:                 additionalSizeDelta: int256(announcedOpen.additionalSize)
+109:             });
++++              vault.checkSkewMax(0); //0 means that vault.updateGlobalPositionData has added announcedOpen.additionalSize.
+......
+140:     }
+```
+
+Also, if `announcedAdjust.additionalSizeAdjustment` is greater than 0 in [[executeAdjust](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L166)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L166), similar fix is required.
+
+
+
+## Discussion
+
+**sherlock-admin**
+
+1 comment(s) were left on this issue during the judging contest.
+
+**takarez** commented:
+>  valid: checkSkewMax should be adjusted; medium(6)
+
+
+
+**sherlock-admin**
+
+The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/266.
+
+**itsermin**
+
+Resolved here: https://github.com/dhedge/flatcoin-v1/pull/266
+Because collateral is no longer settled in `updateGlobalPositionData`
+
+**sherlock-admin4**
+
+The Lead Senior Watson signed off on the fix.
+
+# Issue M-3: Oracle will not failover as expected during liquidation 
+
+Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/177 
+
+## Found by 
+0xLogos, Stryder, alexzoid, evmboi32, ge6a, gqrp, jennifer37, nobody2018, trauki, xiaoming90
+## Summary
+
+Oracle will not failover as expected during liquidation. If the liquidation cannot be executed due to the revert described in the following scenario, underwater positions and bad debt accumulate in the protocol, threatening the solvency of the protocol.
+
+## Vulnerability Detail
+
+The liquidators have the option to update the Pyth price during liquidation. If the liquidators do not intend to update the Pyth price during liquidation, they have to call the second `liquidate(uint256 tokenId)` function at Line 85 below directly, which does not have the `updatePythPrice` modifier.
+
+https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LiquidationModule.sol#L75
+
+```solidity
+File: LiquidationModule.sol
+75:     function liquidate(
+76:         uint256 tokenID,
+77:         bytes[] calldata priceUpdateData
+78:     ) external payable whenNotPaused updatePythPrice(vault, msg.sender, priceUpdateData) {
+79:         liquidate(tokenID);
+80:     }
+81: 
+82:     /// @notice Function to liquidate a position.
+83:     /// @dev One could directly call this method instead of `liquidate(uint256, bytes[])` if they don't want to update the Pyth price.
+84:     /// @param tokenId The token ID of the leverage position.
+85:     function liquidate(uint256 tokenId) public nonReentrant whenNotPaused liquidationInvariantChecks(vault, tokenId) {
+86:         FlatcoinStructs.Position memory position = vault.getPosition(tokenId);
+```
+
+It was understood from the protocol team that the rationale for allowing the liquidators to execute a liquidation without updating the Pyth price is to ensure that the liquidations will work regardless of Pyth's working status, in which case Chainlink is the fallback, and the last oracle price will be used for the liquidation.
+
+However, upon further review, it was found that the fallback mechanism within the FlatCoin protocol does not work as expected by the protocol team.
+
+Assume that Pyth is down. In this case, no one would be able to fetch the latest off-chain price from Pyth network and update Pyth on-chain contract. As a result, the prices stored in the Pyth on-chain contract will become outdated and stale. 
+
+When liquidation is executed in FlatCoin protocol, the following `_getPrice` function will be executed to fetch the price. Line 107 below will fetch the latest price from Chainlink, while Line 108 below will fetch the last available price on the Pyth on-chain contract. When the Pyth on-chain prices have not been updated for a period of time, the deviation between `onchainPrice` and `offchainPrice` will widen till a point where `diffPercent > maxDiffPercent` and a revert will occur at Line 113 below, thus blocking the liquidation from being carried out. As a result, the liquidation mechanism within the FlatCoin protocol will stop working.
+
+Also, the protocol team's goal of allowing the liquidators to execute a liquidation without updating the Pyth price to ensure that the liquidations will work regardless of Pyth's working status will not be achieved.
+
+https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/OracleModule.sol#L113
+
+```solidity
+File: OracleModule.sol
+102:     /// @notice Returns the latest 18 decimal price of asset from either Pyth.network or Chainlink.
+103:     /// @dev It verifies the Pyth network price against Chainlink price (ensure that it is within a threshold).
+104:     /// @return price The latest 18 decimal price of asset.
+105:     /// @return timestamp The timestamp of the latest price.
+106:     function _getPrice(uint32 maxAge) internal view returns (uint256 price, uint256 timestamp) {
+107:         (uint256 onchainPrice, uint256 onchainTime) = _getOnchainPrice(); // will revert if invalid
+108:         (uint256 offchainPrice, uint256 offchainTime, bool offchainInvalid) = _getOffchainPrice();
+109:         bool offchain;
+110: 
+111:         uint256 priceDiff = (int256(onchainPrice) - int256(offchainPrice)).abs();
+112:         uint256 diffPercent = (priceDiff * 1e18) / onchainPrice;
+113:         if (diffPercent > maxDiffPercent) revert FlatcoinErrors.PriceMismatch(diffPercent);
+114: 
+115:         if (offchainInvalid == false) {
+116:             // return the freshest price
+117:             if (offchainTime >= onchainTime) {
+118:                 price = offchainPrice;
+119:                 timestamp = offchainTime;
+120:                 offchain = true;
+121:             } else {
+122:                 price = onchainPrice;
+123:                 timestamp = onchainTime;
+124:             }
+125:         } else {
+126:             price = onchainPrice;
+127:             timestamp = onchainTime;
+128:         }
+129: 
+130:         // Check that the timestamp is within the required age
+131:         if (maxAge < type(uint32).max && timestamp + maxAge < block.timestamp) {
+132:             revert FlatcoinErrors.PriceStale(
+133:                 offchain ? FlatcoinErrors.PriceSource.OffChain : FlatcoinErrors.PriceSource.OnChain
+134:             );
+135:         }
+136:     }
+```
+
+## Impact
+
+The liquidation mechanism is the core component of the protocol and is important to the solvency of the protocol. If the liquidation cannot be executed due to the revert described in the above scenario, underwater positions and bad debt accumulate in the protocol threaten the solvency of the protocol.
+
+## Code Snippet
+
+https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LiquidationModule.sol#L75
+
+https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/OracleModule.sol#L113C10-L113C92
+
+## Tool used
+
+Manual Review
+
+## Recommendation
+
+Consider implementing a feature to allow the protocol team to disable the price deviation check so that the protocol team can disable it in the event that Pyth network is down for an extended period of time.
+
+
+
+## Discussion
+
+**sherlock-admin**
+
+1 comment(s) were left on this issue during the judging contest.
+
+**takarez** commented:
+>  valid: high(4)
+
+
+
+**sherlock-admin**
+
+The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/270.
+
+**sherlock-admin4**
+
+The Lead Senior Watson signed off on the fix.
+
+# Issue M-4: Large amounts of points can be minted virtually without any cost 
+
+Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/187 
+
+## Found by 
+Bauer, Dliteofficial, GoSlang, evmboi32, jennifer37, joicygiore, nobody2018, novaman33, vesla0xfa, xiaoming90
+## Summary
+
+Large amounts of points can be minted virtually without any cost. The points are intended to be used to exchange something of value. A malicious user could abuse this to obtain a large number of points, which could obtain excessive value and create unfairness among other protocol users.
+
+## Vulnerability Detail
+
+When depositing stable collateral, the LPs only need to pay for the keeper fee. The keeper fee will be sent to the caller who executed the deposit order.
+
+When withdrawing stable collateral, the LPs need to pay for the keeper fee and withdraw fee. However, there is an instance where one does not need to pay for the withdrawal fee. Per the condition at Line 120 below, if the `totalSupply` is zero, this means that it is the final/last withdrawal. In this case, the withdraw fee will not be applicable and remain at zero.
+
+https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/StableModule.sol#L96
+
+```solidity
+File: StableModule.sol
+096:     function executeWithdraw(
+097:         address _account,
+098:         uint64 _executableAtTime,
+099:         FlatcoinStructs.AnnouncedStableWithdraw calldata _announcedWithdraw
+100:     ) external whenNotPaused onlyAuthorizedModule returns (uint256 _amountOut, uint256 _withdrawFee) {
+101:         uint256 withdrawAmount = _announcedWithdraw.withdrawAmount;
+..SNIP..
+112:         _burn(_account, withdrawAmount);
+..SNIP..
+118:         // Check that there is no significant impact on stable token price.
+119:         // This should never happen and means that too much value or not enough value was withdrawn.
+120:         if (totalSupply() > 0) {
+121:             if (
+122:                 stableCollateralPerShareAfter < stableCollateralPerShareBefore - 1e6 ||
+123:                 stableCollateralPerShareAfter > stableCollateralPerShareBefore + 1e6
+124:             ) revert FlatcoinErrors.PriceImpactDuringWithdraw();
+125: 
+126:             // Apply the withdraw fee if it's not the final withdrawal.
+127:             _withdrawFee = (stableWithdrawFee * _amountOut) / 1e18;
+128: 
+129:             // additionalSkew = 0 because withdrawal was already processed above.
+130:             vault.checkSkewMax({additionalSkew: 0});
+131:         } else {
+132:             // Need to check there are no longs open before allowing full system withdrawal.
+133:             uint256 sizeOpenedTotal = vault.getVaultSummary().globalPositions.sizeOpenedTotal;
+134: 
+135:             if (sizeOpenedTotal != 0) revert FlatcoinErrors.MaxSkewReached(sizeOpenedTotal);
+136:             if (stableCollateralPerShareAfter != 1e18) revert FlatcoinErrors.PriceImpactDuringFullWithdraw();
+137:         }
+```
+
+When LPs deposit rETH and mint UNIT, the protocol will mint points to the depositor's account as per Line 84 below.
+
+Assume that the vault has been newly deployed on-chain. Bob is the first LP to deposit rETH into the vault. Assume for a period of time (e.g., around 30 minutes), there are no other users depositing into the vault except for Bob.
+
+Bob could perform the following actions to mint points for free:
+
+- Bob announces a deposit order to deposit 100e18 rETH. Paid for the keeper fee. (Acting as a LP).
+- Wait 10 seconds for the `minExecutabilityAge` to pass
+- Bob executes the deposit order and mints 100e18 UNIT (Exchange rate 1:1). Protocol also mints 100e18 points to Bob's account. Bob gets back the keeper fee. (Acting as Keeper)
+- Immediately after his `executeDeposit` TX, Bob inserts an "announce withdraw order" TX to withdraw all his 100e18 UNIT and pay for the keeper fee.
+- Wait 10 seconds for the `minExecutabilityAge` to pass
+- Bob executes the withdraw order and receives back his initial investment of 100e18 rETH. Since he is the only LP in the protocol, it is considered the final/last withdrawal, and he does not need to pay any withdraw fee. He also got back his keeper fee. (Acting as Keeper)
+
+Each attack requires 20 seconds (10 + 10) to be executed. Bob could rinse and repeat the attack until he was no longer the only LP in the system, where he had to pay for the withdraw fee, which might make this attack unprofitable.
+
+If Bob is the only LP in the system for 30 minutes, he could gain 9000e18 points (`(30 minutes / 20 seconds) * 100e18` ) for free as Bob could get back his keeper fee and does not incur any withdraw fee. The only thing that Bob needs to pay for is the gas fee, which is extremely cheap on L2 like Base.
+
+```solidity
+File: StableModule.sol
+61:     function executeDeposit(
+62:         address _account,
+63:         uint64 _executableAtTime,
+64:         FlatcoinStructs.AnnouncedStableDeposit calldata _announcedDeposit
+65:     ) external whenNotPaused onlyAuthorizedModule returns (uint256 _liquidityMinted) {
+66:         uint256 depositAmount = _announcedDeposit.depositAmount;
+..SNIP..
+70:         _liquidityMinted = (depositAmount * (10 ** decimals())) / stableCollateralPerShare(maxAge);
+..SNIP..
+75:         _mint(_account, _liquidityMinted);
+76: 
+77:         vault.updateStableCollateralTotal(int256(depositAmount));
+..SNIP..
+82:         // Mint points
+83:         IPointsModule pointsModule = IPointsModule(vault.moduleAddress(FlatcoinModuleKeys._POINTS_MODULE_KEY));
+84:         pointsModule.mintDeposit(_account, _announcedDeposit.depositAmount);
+```
+
+## Impact
+
+Large amounts of points can be minted virtually without any cost. The points are intended to be used to exchange something of value. A malicious user could abuse this to obtain a large number of points, which could obtain excessive value from the protocol and create unfairness among other protocol users.
+
+## Code Snippet
+
+https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/StableModule.sol#L96
+
+## Tool used
+
+Manual Review
+
+## Recommendation
+
+One approach that could mitigate this risk is also to impose withdraw fee for the final/last withdrawal so that no one could abuse this exception to perform any attack that was once not profitable due to the need to pay withdraw fee.
+
+In addition, consider deducting the points once a position is closed or reduced in size so that no one can attempt to open and adjust/close a position repeatedly to obtain more points.
+
+
+
+## Discussion
+
+**sherlock-admin**
+
+2 comment(s) were left on this issue during the judging contest.
+
+**0xLogos** commented:
+> low/info, points != funds
+
+**takarez** commented:
+>  invalid
+
+
+
+**nevillehuang**
+
+@rashtrakoff Any reason why this issue was disputed? What are the points FMP for?
+
+I believe large amount of points shouldn't be freely minted.
+
+**rashtrakoff**
+
+@nevillehuang , this is a good find imo but since we are going to be the first depositors as well as creators of leverage positions as part of protocol initialisation I wouldn't believe this is something we  are concerned about. Furthermore, the points have no monetary value (at least not something we are going to assign) and there are costs associated with doing looping (keeper fees, possible losses due to price volatility etc.). Cc @itsermin @D-Ig .
+
+**nevillehuang**
+
+@rashtrakoff I will be maintaining as medium severity, even though points currently do not hold value, I believe it is not intended to allow free minting of points freely given it will hold some form of incentives in the future, so I believe it breaks core contract functionality. From my understanding, being the first depositor is only given as an example and is not required as shown in other issues such as #44 and #141.
+
+**0xLogos**
+
+Escalate 
+
+Should be info
+
+> the points have no monetary value
+> there are costs associated with doing looping
+
+**sherlock-admin2**
+
+> Escalate 
+> 
+> Should be info
+> 
+> > the points have no monetary value
+> > there are costs associated with doing looping
+
+You've created a valid escalation!
+
+To remove the escalation from consideration: Delete your comment.
+
+You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
+
+**santipu03**
+
+Agree with @0xLogos. 
+
+Moreover, the withdrawal fee will make the attacker lose value with each withdrawal, making the attack unfeasable. 
+
+Even in the improbable case that the attacker is a sophisticated bot that can act as a keeper and the withdrawal fee is not activated, the probability would be low with the impact being low/medium. Therefore, the overall severity should be low. 
+
+**securitygrid**
+
+This issue is valid. According to rules:
+
+> Loss of airdrops or liquidity fees or any other rewards that are not part of the original protocol design is not considered a valid high/medium
+
+FMP is part of the original protocol design. It's an incentive for users.
+
+**0xcrunch**
+
+Sponsor is OK with issues related to FMP if they are not relevant to the overall functioning of the protocol.
+
+https://discord.com/channels/812037309376495636/1199005620536356874/1200372130253115413
+
+**xiaoming9090**
+
+If points are not an incentive or something of value to the user, then there is no purpose for having a points system in the first place. The obvious answer is that the points will not be worthless because it makes no sense for users to hold something that is worthless. With that, points should be considered something of value, and any bugs, such as infinity minting of points/values, should not be QA/Low.
+
+**0xcrunch**
+
+This kind of issue has no impact to the overall functioning of the protocol, so it is acceptable as stated by sponsor in the public channel.
+
+**nevillehuang**
+
+Agree with @xiaoming9090, I believe there is no logical reason why this should be allowed in the first place. 
+
+@rashtrakoff What is the intended use case of points? It must have some incentive attached to it (even if its in the future), so users should never be getting points arbitrarily.
+
+**itsermin**
+
+Thanks for your inputs here @xiaoming9090 @nevillehuang 
+
+I discussed this with @rashtrakoff today. Even though there's a cost associated with looped mints (trading fees). Being able to mint a large number of FMP is not ideal. The user could alao potentially LP on the UNIT side to minimise their downside.
+
+We're looking at a couple of options:
+a) put a daily cap on the number of available FMP
+b) remove the trade volume minting altogether
+
+**0xcrunch**
+
+Rewarding an issue publicly known as acceptable is unfair to watsons who didn't submit the issue out of respecting of Sherlock rules.
+
+**Czar102**
+
+I'd normally consider this a valid issue given that the points may have some value, but given the sponsor's message referenced in https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/187#issuecomment-1956258407, I think this should be considered informational.
+
+Planning to accept the escalation and invalidate the issue.
+
+**nevillehuang**
+
+@Czar102 Fair enough, given the new hierachy of truth in place, I believe this can be low severity, unless watsons have any contest details and/or protocol documentation indicating a incentivized use case of points. @xiaoming9090 @securitygrid 
+
+> Hierarchy of truth: Contest README > Sherlock rules for valid issues > protocol documentation (including code comments) > protocol answers on the contest public Discord channel.
+
+
+
+**novaman33**
+
+@Czar102 , I believe there are several code comments that suggest that points are incentive:
+In `PointsModule.sol` 
+```
+/// @title PointsModule
+/// @author dHEDGE
+/// @notice Module for awarding points as an incentive.
+```
+
+And before owner mintTo function:
+```
+/// @notice Owner can mint points to any account. 
+This can be used to distribute points to competition winners and other reward incentives.
+    ///         The points start a 12 month unlock tax (update unlockTime).
+ ```
+These state that points will be used as an encouragement, meaning they will either be something of value or be used to obtain something of value. I cannot agree that being able to obtain large amounts of points is a low severity case, given the comments in the code, which in the sherlock's Hierarchy of truth have more weight than protocol answers on the contest public Discord channel.
+
+**nevillehuang**
+
+> @Czar102 , I believe there are several code comments that suggest that points are incentive: In `PointsModule.sol`
+> 
+> ```
+> /// @title PointsModule
+> /// @author dHEDGE
+> /// @notice Module for awarding points as an incentive.
+> ```
+> 
+> And before owner mintTo function:
+> 
+> ```
+> /// @notice Owner can mint points to any account. 
+> This can be used to distribute points to competition winners and other reward incentives.
+>     ///         The points start a 12 month unlock tax (update unlockTime).
+> ```
+> 
+> These state that points will be used as an encouragement, meaning they will either be something of value or be used to obtain something of value. I cannot agree that being able to obtain large amounts of points is a low severity case, given the comments in the code, which in the sherlock's Hierarchy of truth have more weight than protocol answers on the contest public Discord channel.
+
+Good point, in that case, I believe this issue should remain medium severity, given code comments (as seen [here](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/PointsModule.sol#L14) and [here](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/PointsModule.sol#L89) has a greater significance than discord messages as shown in the hierarchy of truth [above](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/187#issuecomment-1970591636)
+
+**Czar102**
+
+I believe considering something an incentive doesn't imply this functionality being important enough for issues regarding it to be considered valid, while the sponsor's comment directly specified whether the issues of the type are valid. Also, these comments don't contradict the sponsor's comment at all.
+
+I stand by the previous proposition to invalidate the issue.
+
+**novaman33**
+
+@Czar102 the contracts in scope are stated in the readMe. The sponsor said " we can be ok with issues with the same.",  by which they state issues related to the points module are out of scope. I cannot understand why the points module is in scope in the first place. Given the Hierarchy of truth I believe points module are still in scope.
+
+
+**nevillehuang**
+
+@Czar102 I don't quite get your statement, it was already stated explicitly in code comments of the contract that points are meant to have an incentivized use case. So by hierarchy of truth, this is clearly a medium severity issue (and maybe can even be argued as high severity). Whatever it is, I will respect your decision, but hoping for a better clarification.
+
+**Czar102**
+
+Given the hierarchy of truth, I think this issue is indeed a valid Medium.
+
+Planning to reject the escalation and leave the issue as is.
+
+**Evert0x**
+
+Result:
+Medium
+Has Duplicates
+
+**sherlock-admin2**
+
+Escalations have been resolved successfully!
+
+Escalation status:
+- [0xLogos](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/187/#issuecomment-1956094137): rejected
+
+**sherlock-admin4**
+
+The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/294.
+
+# Issue M-5: Vault Inflation Attack 
+
+Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/190 
+
+The protocol has acknowledged this issue.
+
+## Found by 
+santipu\_, xiaoming90
+## Summary
+
+Malicious users can perform an inflation attack against the vault to steal the assets of the victim.
+
+## Vulnerability Detail
+
+A malicious user can perform a donation to execute a classic first depositor/ERC4626 inflation Attack against the FlatCoin vault. The general process of this attack is well-known, and a detailed explanation of this attack can be found in many of the resources such as the following:
+
+- https://blog.openzeppelin.com/a-novel-defense-against-erc4626-inflation-attacks
+- https://mixbytes.io/blog/overview-of-the-inflation-attack
+
+In short, to kick-start the attack, the malicious user will often usually mint the smallest possible amount of shares (e.g., 1 wei) and then donate significant assets to the vault to inflate the number of assets per share. Subsequently, it will cause a rounding error when other users deposit.
+
+However, in Flatcoin, there are various safeguards in place to mitigate this attack. Thus, one would need to perform additional steps to workaround/bypass the existing controls.
+
+Let's divide the setup of the attack into two main parts:
+
+1. Malicious user mint 1 mint of share
+2. Donate or transfer assets to the vault to inflate the assets per share
+
+#### Part 1 - Malicious user mint 1 mint of share
+
+Users could attempt to mint 1 wei of share. However, the validation check at Line 79 will revert as the share minted is less than `MIN_LIQUIDITY` = 10_000. However, this minimum liquidation requirement check can be bypassed.
+
+https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/StableModule.sol#L61
+
+```solidity
+File: StableModule.sol
+61:     function executeDeposit(
+62:         address _account,
+63:         uint64 _executableAtTime,
+64:         FlatcoinStructs.AnnouncedStableDeposit calldata _announcedDeposit
+65:     ) external whenNotPaused onlyAuthorizedModule returns (uint256 _liquidityMinted) {
+66:         uint256 depositAmount = _announcedDeposit.depositAmount;
+67: 
+68:         uint32 maxAge = _getMaxAge(_executableAtTime);
+69: 
+70:         _liquidityMinted = (depositAmount * (10 ** decimals())) / stableCollateralPerShare(maxAge);
+71: 
+72:         if (_liquidityMinted < _announcedDeposit.minAmountOut)
+73:             revert FlatcoinErrors.HighSlippage(_liquidityMinted, _announcedDeposit.minAmountOut);
+74: 
+75:         _mint(_account, _liquidityMinted);
+76: 
+77:         vault.updateStableCollateralTotal(int256(depositAmount));
+78: 
+79:         if (totalSupply() < MIN_LIQUIDITY) // @audit-info MIN_LIQUIDITY = 10_000
+80:             revert FlatcoinErrors.AmountTooSmall({amount: totalSupply(), minAmount: MIN_LIQUIDITY});
+```
+
+First, Bob mints 10000 wei shares via `executeDeposit` function. Next, Bob withdraws 9999 wei shares via the `executeWithdraw`. In the end, Bob successfully owned only 1 wei share, which is the prerequisite for this attack.
+
+#### Part 2 - Donate or transfer assets to the vault to inflate the assets per share
+
+The vault tracks the number of collateral within the state variables. Thus, simply transferring rETH collateral to the vault directly will not work, and the assets per share will remain the same.
+
+To work around this, Bob creates a large number of accounts (with different wallet addresses). He could choose any or both of the following methods to indirectly transfer collateral to the LP pool/vault to inflate the assets per share:
+
+1) Open a large number of leveraged long positions with the intention of incurring large amounts of losses. The long positions' losses are the gains of the LPs, and the collateral per share will increase.
+2) Open a large number of leveraged long positions till the max skew of 120%. Thus, this will cause the funding rate to increase, and the long will have to pay the LPs, which will also increase the collateral per share.
+
+#### Triggering rounding error
+
+The `stableCollateralPerShare` will be inflated at this point. Following is the formula used to determine the number of shares minted to the depositor.
+
+If the `depositAmount` by the victim is not sufficiently large enough, the amount of shares minted to the depositor will round down to zero.
+
+```solidity
+_collateralPerShare = (stableBalance * (10 ** decimals())) / totalSupply;
+_liquidityMinted = (depositAmount * (10 ** decimals())) / _collateralPerShare
+```
+
+Finally, the attacker withdraws their share from the pool. Since they are the only ones with any shares, this withdrawal equals the balance of the vault. This means the attacker also withdraws the tokens deposited by the victim earlier.
+
+## Impact
+
+Malicous users could steal the assets of the victim.
+
+## Code Snippet
+
+https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/StableModule.sol#L61
+
+## Tool used
+
+Manual Review
+
+## Recommendation
+
+A `MIN_LIQUIDITY` amount of shares needs to exist within the vault to guard against a common inflation attack.
+
+However, the current approach of only checking if the `totalSupply() < MIN_LIQUIDITY` is not sufficient, and could be bypassed by making use of the withdraw function.
+
+A more robust approach to ensuring that there is always a minimum number of shares to guard against inflation attack is to mint a certain amount of shares to zero address (dead address) during contract deployment (similar to what has been implemented in Uniswap V2). 
+
+
+
+## Discussion
+
+**sherlock-admin**
+
+2 comment(s) were left on this issue during the judging contest.
+
+**ubl4nk** commented:
+> invalid or Low-Impact -> Bob can't deposit 10_000 wei and withdraw 9_999, because there are delayed-orders (orders become pending), there are no sorted orders and keepers can select to execute which orders first
+
+**takarez** commented:
+>  invalid
+
+
+
+**0xLogos**
+
+Escalate 
+
+Low. Attack is too risky.
+
+There is no frontrunning so attacker must prepare attack in advance. Someone can deposit amount larger than attacker expected and take his money.
+
+**sherlock-admin2**
+
+> Escalate 
+> 
+> Low. Attack is too risky.
+> 
+> There is no frontrunning so attacker must prepare attack in advance. Someone can deposit amount larger than attacker expected and take his money.
+
+You've created a valid escalation!
+
+To remove the escalation from consideration: Delete your comment.
+
+You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
+
+**0xLogos**
+
+> If the depositAmount by the victim is not sufficiently large enough, the amount of shares minted to the depositor will round down to zero.
+
+But if deposit is large enough, attacker will lose.
+
+**santipu03**
+
+Hi @0xLogos,
+
+Check my dup issue for clarification (#128) but the attacker can easily provoke a permanent DoS on the Vault by being the first depositor. In case a user deposits an insane amount of funds to pass the `MIN_LIQUIDITY` check, the attacker would be able to steal most of the funds as a classic inflation attack. 
+
+**xiaoming9090**
+
+> Escalate
+> 
+> Low. Attack is too risky.
+> 
+> There is no frontrunning so attacker must prepare attack in advance. Someone can deposit amount larger than attacker expected and take his money.
+
+The escalation is invalid. Refer to the santipu03 response above. To add to his response:
+
+The attack can be executed without frontrunning once the vault has been "set up" by the malicious user (After completing Steps 1 and 2 in the above report). Afterward, victims whose `depositAmount` is not sufficiently large enough will lose their assets to the attacker.
+
+Also, the claim in the escalation that someone depositing an amount larger than the attacker will cause the attacker's money to be stolen is baseless.
+
+**0xcrunch**
+
+This is a low/QA, the issue can be easily mitigated by sponsor conducting a sacrificial deposit in the same transaction of deploying the Vault.
+
+
+**xiaoming9090**
+
+> This is a low/QA, the issue can be easily mitigated by sponsor conducting a sacrificial deposit in the same transaction of deploying the Vault.
+
+Disagree. There is no evidence provided to Watsons in the public domain during the audit contest period (22 Jan to 4 Feb) that states that the protocol team will perform a sacrificial deposit when deploying the vault.
+
+**r0ck3tzx**
+
+This attack is absolutely not practical in the environment where front-running is not possible such as Base and its not possible to have general MEV agents - see the recent Radiant hack. If this issue would be considered valid then all reported front-running issues should be as well. Thus the The low/QA severity is more appropriate for this issue.
+
+
+**Czar102**
+
+I believe that this is a borderline Med/Low that should be included as Med since it's possible to guess, or to somehow get to know the timing of the deposit, which is the only information the attacker needs.
+
+Planning to reject the escalation and leave the issue as is.
+
+**nevillehuang**
+
+Agree with @Czar102 and @xiaoming9090 
+
+**Czar102**
+
+Result:
+Medium
+Has duplicates
+
+**sherlock-admin2**
+
+Escalations have been resolved successfully!
+
+Escalation status:
+- [0xLogos](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/190/#issuecomment-1956476732): rejected
+
+# Issue M-6: Long traders unable to withdraw their assets 
+
+Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/196 
+
+## Found by 
+CL001, shaka, xiaoming90
+## Summary
+
+Whenever the protocol reaches a state where the long trader's profit is larger than LP's stable collateral total, the protocol will be bricked. As a result, the margin deposited and gain of the long traders can no longer be withdrawn and the LPs cannot withdraw their collateral, leading to a loss of assets for the  users.
+
+## Vulnerability Detail
+
+Per Line 97 below, if the collateral balance is less than the tracked balance, the `_getCollateralNet` invariant check will revert.
+
+https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/misc/InvariantChecks.sol#L97
+
+```solidity
+File: InvariantChecks.sol
+089:     /// @dev Returns the difference between actual total collateral balance in the vault vs tracked collateral
+090:     ///      Tracked collateral should be updated when depositing to stable LP (stableCollateralTotal) or
+091:     ///      opening leveraged positions (marginDepositedTotal).
+092:     /// TODO: Account for margin of error due to rounding.
+093:     function _getCollateralNet(IFlatcoinVault vault) private view returns (uint256 netCollateral) {
+094:         uint256 collateralBalance = vault.collateral().balanceOf(address(vault));
+095:         uint256 trackedCollateral = vault.stableCollateralTotal() + vault.getGlobalPositions().marginDepositedTotal;
+096: 
+097:         if (collateralBalance < trackedCollateral) revert FlatcoinErrors.InvariantViolation("collateralNet");
+098: 
+099:         return collateralBalance - trackedCollateral;
+100:     }
+```
+
+Assume that:
+
+- Bob's long position: Margin = 50 ETH
+- Alice's LP: Deposited = 50 ETH
+- Collateral Balance = 100 ETH
+- Tracked Balance = 100 ETH (Stable Collateral Total = 50 ETH, Margin Deposited Total = 50 ETH)
+
+Assume that Bob's long position gains a profit of 51 ETH.
+
+The following actions will trigger the `updateGlobalPositionData` function internally: executeOpen, executeAdjust, executeClose, and liquidation.
+
+When the ` FlatcoinVault.updateGlobalPositionData` function is triggered to update the global position data:
+
+```solidity
+profitLossTotal = 51 ETH (gain by long)
+
+newMarginDepositedTotal = marginDepositedTotal + marginDelta + profitLossTotal
+newMarginDepositedTotal = 50 ETH + 0 + 51 ETH = 101 ETH
+
+_updateStableCollateralTotal(-51 ETH)
+newStableCollateralTotal = stableCollateralTotal + _stableCollateralAdjustment
+newStableCollateralTotal = 50 ETH + (-51 ETH) = -1 ETH
+stableCollateralTotal = (newStableCollateralTotal > 0) ? newStableCollateralTotal : 0;
+stableCollateralTotal = 0
+```
+
+In this case, the state becomes as follows:
+
+- Collateral Balance = 100 ETH
+- Tracked Balance = 101 ETH (Stable Collateral Total = 0 ETH, Margin Deposited Total = 101 ETH)
+
+Notice that the Collateral Balance and Tracked Balance are no longer in sync. As such, the revert will occur when the `_getCollateralNet` invariant checks are performed.
+
+Whenever the protocol reaches a state where the long trader's profit is larger than LP's stable collateral total, this issue will occur, and the protocol will be bricked. The margin deposited and gain of the long traders can no longer be withdrawn from the protocol. The LPs also cannot withdraw their collateral.
+
+The reason is that the `_getCollateralNet` invariant checks are performed in all functions of the protocol that can be accessed by users (listed below):
+
+- Deposit
+- Withdraw
+- Open Position
+- Adjust Position
+- Close Position
+- Liquidate
+
+## Impact
+
+Loss of assets for the users. Since the protocol is bricked due to revert, the long traders are unable to withdraw their deposited margin and gain and the LPs cannot withdraw their collateral.
+
+## Code Snippet
+
+https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/misc/InvariantChecks.sol#L97
+
+## Tool used
+
+Manual Review
+
+## Recommendation
+
+Currently, when the loss of the LP is more than the existing `stableCollateralTotal`, the loss will be capped at zero, and it will not go negative. In the above example, the `stableCollateralTotal` is 50, and the loss is 51. Thus, the `stableCollateralTotal` is set to zero instead of -1.
+
+The loss of LP and the gain of the trader should be aligned or symmetric. However, this is not the case in the current implementation. In the above example, the gain of traders is 51, while the loss of LP is 50, which results in a discrepancy here.
+
+To fix the issue, the loss of LP and the gain of the trader should be aligned. For instance, in the above example, if the loss of LP is capped at 50, then the profit of traders must also be capped at 50.
+
+Following is a high-level logic of the fix:
+
+```solidity
+If (profitLossTotal > stableCollateralTotal): // (51 > 50) => True
+	profitLossTotal = stableCollateralTotal // profitLossTotal = 50
+	
+newMarginDepositedTotal = marginDepositedTotal + marginDelta + profitLossTotal // 50 + 0 + 50 = 100
+	
+newStableCollateralTotal = stableCollateralTotal + (-profitLossTotal) // 50 + (-50) = 0
+stableCollateralTotal = (newStableCollateralTotal > 0) ? newStableCollateralTotal : 0; // stableCollateralTotal = 0
+```
+
+The comment above verifies that the logic is working as intended.
+
+
+
+## Discussion
+
+**sherlock-admin**
+
+1 comment(s) were left on this issue during the judging contest.
+
+**takarez** commented:
+>  valid: high(6)
+
+
+
+**ydspa**
+
+Escalate
+
+This should be a medium issue, as the likelihood is extreme low due to strict external market conditions
+>Flatcoin can be net short and ETH goes up 5x in a short period of time, potentially leading to UNIT going to 0.
+https://audits.sherlock.xyz/contests/132
+
+Meet sherlock's rule for Medium
+>Causes a loss of funds but requires certain external conditions or specific states
+
+But not meet the rule for High
+>Definite loss of funds without (extensive) limitations of external conditions
+
+**sherlock-admin2**
+
+> Escalate
+> 
+> This should be a medium issue, as the likelihood is extreme low due to strict external market conditions
+> >Flatcoin can be net short and ETH goes up 5x in a short period of time, potentially leading to UNIT going to 0.
+> https://audits.sherlock.xyz/contests/132
+> 
+> Meet sherlock's rule for Medium
+> >Causes a loss of funds but requires certain external conditions or specific states
+> 
+> But not meet the rule for High
+> >Definite loss of funds without (extensive) limitations of external conditions
+
+You've created a valid escalation!
+
+To remove the escalation from consideration: Delete your comment.
+
+You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
+
+**xiaoming9090**
+
+Disagree with the escalation. The following point in the escalation is simply a remark by the protocol team stating that if the ETH goes up 5x, the value of UNIT token will go down to zero
+
+> Flatcoin can be net short and ETH goes up 5x in a short period of time, potentially leading to UNIT going to 0.
+> https://audits.sherlock.xyz/contests/132
+
+It has nothing to do with preventing the protocol from reaching a state where the long trader's profit is larger than LP's stable collateral total. 
+
+On the other hand, this point made by the protocol team actually reinforces the case I made in the report. The point by the protocol team highlighted the fact that the ETH can go up significantly over a short period of time. When this happens,  the long trader's profit will be large. Thus, it will cause the protocol to reach a state where the long trader's profit is larger than LP's stable collateral total, which triggers this issue. When this happens, the protocol will be bricked, thus justified for a High.
+
+Also, the requirement for High is "Definite loss of funds without (extensive) limitations of external conditions". This issue can occur without extensive external conditions as only one condition, which is the price of the ETH goes up significantly, is needed to trigger the bug. Thus, it meets the requirement of a High issue.
+
+**Czar102**
+
+@xiaoming9090 aren't protocol risk parameters set not to allow the long traders' profits to be larger than LP funds?
+
+**xiaoming9090**
+
+> @xiaoming9090 aren't protocol risk parameters set not to allow the long traders' profits to be larger than LP funds?
+
+@Czar102 The risk parameter I'm aware of is the `skewFractionMax` parameter, which prevents the system from having too many long positions compared to short positions. The maximum ratio of long to short position size is 1.2 (120% long: 100% long) during the audit. The purpose of limiting the number of long positions is to avoid the long side wiping out the value of the short side (LP) too quickly when the ETH price goes up.
+
+However, I'm unaware of any restrictions constraining long traders' profits. The long traders' profits will increase along with the increase in ETH price.
+
+**Czar102**
+
+So, the price needs to go up 5x in order to trigger this issue?
+
+**xiaoming9090**
+
+@Czar102 Depending on the `skewFractionMax` parameter being configured at any single point of time. The owner can change this value via the `setSkewFractionMax` function. The higher the value is, the smaller the price increase needed to trigger the issue.
+
+If the `skewFractionMax` is set to 20%, 5x will cause the LP's UNIT holding to drop to zero. Thus, slightly more than 5x will trigger this issue.
+Sidenote: The 20% is chosen in this report since it was mentioned in the contest's README 
+
+**Czar102**
+
+I think this is a fair assumption to have these values set so that other positions will practically never go into negative values – so this bug will practically never be triggered. Hence, the assumptions for this issue to be triggered are quite extensive.
+
+Planning to accept the escalation and consider this issue a Medium severity one.
+
+**0xjuaan**
+
+So it seems that in order for this issue to be triggered, ETH has to rise 5x in a short period of time. 
+
+However in the 'known issues/acceptable risks that should not result in a valid finding' section of the contest README, it says:
+
+> theoretically, if ETH price increases by 5x in a short period of time whilst the flatcoin holders are 20% short, it's possible for flatcoin value to go to 0. This scenario is deemed to be extremely unlikely and the funding rate is able to move quickly enough to bring the flatcoin holders back to delta neutral.
+
+Since that scenario is required to trigger this issue, this issue should not be deemed as valid. 
+
+**xiaoming9090**
+
+> So it seems that in order for this issue to be triggered, ETH has to rise 5x in a short period of time.
+> 
+> However in the 'known issues/acceptable risks that should not result in a valid finding' section of the contest README, it says:
+> 
+> > theoretically, if ETH price increases by 5x in a short period of time whilst the flatcoin holders are 20% short, it's possible for flatcoin value to go to 0. This scenario is deemed to be extremely unlikely and the funding rate is able to move quickly enough to bring the flatcoin holders back to delta neutral.
+> 
+> Since that scenario is required to trigger this issue, this issue should not be deemed as valid.
+
+The README mentioned that the team is aware of a scenario where the price can go up significantly, leading the LP's Flatcoin value to go to 0. However, that does not mean that the team is aware of other potential consequences when this scenario happens.
+
+**0xjuaan**
+
+But surely if the sponsor deemed that the very rapid 5x price increase of ETH is extremely unlikely, that means that its an acceptable risk that they take on. So any issue which relies on that scenario is a part of that same acceptable risk, so shouldn't be valid right?
+
+The sponsor clarified why they accept this risk and issues relating to this scenario shouldn't be reported, [in this public discord message](https://discord.com/channels/812037309376495636/1199005620536356874/1202614374703824927)
+
+> Hello everyone. I believe some of you guys might have a doubt whether UNIT going to 0 is an issue or not. I believe it was mentioned that UNIT going to 0 is a known behaviour of the system but the reason might not be clear as to why. If the collateral price increases by let's say 5x (in case the skew limit is 120%), the entire short side (UNIT LPs) will be liquidated (though not liquidated in the same way as how leveraged longs are). The system will most likely not be able to recover as longs can simply close their positions and the take away the collateral. The hope is that this scenario doesn't play out in the future due to informed LPs and funding rate and other incentives but we know this is crypto and anything is possible here. Just wanted to clarify this so that we don't get this as a reported issue.
+
+
+**xiaoming9090**
+
+The team is aware and has accepted that FlatCoin's value (short-side/LP) will go to zero when the price goes up significantly.
+However, that is different from this report where the long traders are unable to withdraw when the price goes up significantly.
+
+These are two separate issues, and the root causes are different. The reason why the FlatCoin's value can go to zero is due to the design of the protocol where the short side can lose to the long side. However, this report and its duplicated reports highlighted a bug in the existing implementation that could lead to long traders being unable to withdraw.
+
+
+
+**nevillehuang**
+
+> I think this is a fair assumption to have these values set so that other positions will practically never go into negative values – so this bug will practically never be triggered. Hence, the assumptions for this issue to be triggered are quite extensive.
+> 
+> Planning to accept the escalation and consider this issue a Medium severity one.
+
+Agree to downgrade to medium severity based on dependency of large price increases.
+
+**Czar102**
+
+Based on https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/196#issuecomment-1970315654, still planning to consider this a valid Medium.
+
+**Czar102**
+
+Result:
+Medium
+Has duplicates
+
+**sherlock-admin2**
+
+Escalations have been resolved successfully!
+
+Escalation status:
+- [ydspa](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/196/#issuecomment-1955885947): accepted
+
+**sherlock-admin**
+
+The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/266.
+
+# Issue M-7: Losses of some long traders can eat into the margins of others 
+
+Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/198 
+
+## Found by 
+xiaoming90
+## Summary
+
+The losses of some long traders can eat into the margins of others, resulting in those affected long traders being unable to withdraw their margin and profits, leading to a loss of assets for the long traders.
+
+## Vulnerability Detail
+
+At $T0$, the current price of ETH is \$1000 and assume the following state:
+
+| Alice's Long Position 1                                     | Bob's Long Position 2                                       | Charles (LP)     |
+| ------------------------------------------------------------ | ------------------------------------------------------------ | ---------------- |
+| Position Size = 6 ETH<br />Margin = 3 ETH<br />Last Price (entry price) = \$1000 | Position Size = 6 ETH<br />Margin = 5 ETH<br />Last Price (entry price) = \$1000 | Deposited 12 ETH |
+
+- The `stableCollateralTotal` will be 12 ETH
+- The `GlobalPositions.marginDepositedTotal` will be 8 ETH (3 + 5)
+- The `globalPosition.sizeOpenedTotal` will be 12 ETH (6 + 6)
+- The total balance of ETH in the vault is 20 ETH. 
+
+
+As this is a perfectly hedged market, the accrued fee will be zero, and ignored in this report for simplicity's sake.
+
+At $T1$, the price of the ETH drops from \$1000 to \$600. At this point, the settle margin of both long positions will be as follows:
+
+| Alice's Long Position 1                                     | Bob's Long Position 2                                       |
+| ------------------------------------------------------------ | ------------------------------------------------------------ |
+| priceShift = Current Price - Last Price = \$600 - \$1000 = -\$400<br />PnL = (Position Size * priceShift) / Current Price = (6 ETH * -\$400) / \$400 = -4 ETH<br />settleMargin = marginDeposited + PnL = 3 ETH + (-4 ETH) = -1 ETH | PnL = -4 ETH (Same calculation)<br />settleMargin = marginDeposited + PnL = 5 ETH + (-4 ETH) = 1 ETH |
+
+Alice's long position is underwater (settleMargin < 0), so it can be liquidated. When the liquidation is triggered, it will internally call the `updateGlobalPositionData` function. Even if the liquidation does not occur, any of the following actions will also trigger the `updateGlobalPositionData` function internally:
+
+- executeOpen
+- executeAdjust
+- executeClose
+
+The purpose of the `updateGlobalPositionData` function is to update the global position data. This includes getting the total profit loss of all long traders (Alice & Bob), and updating the margin deposited total + stable collateral total accordingly.
+
+Assume that the `updateGlobalPositionData` function is triggered by one of the above-mentioned functions. Line 179 below will compute the total PnL of all the opened long positions.
+
+```solidity
+priceShift = current price - last price
+priceShift = $600 - $1000 = -$400
+
+profitLossTotal = (globalPosition.sizeOpenedTotal * priceShift) / current price
+profitLossTotal = (12 ETH * -$400) / $600
+profitLossTotal = -8 ETH
+```
+
+The `profitLossTotal` is -8 ETH. This is aligned with what we have calculated earlier, where Alice's PnL is -4 ETH and Bob's PnL is -4 ETH (total = -8 ETH loss). 
+
+At Line 184 below, the `newMarginDepositedTotal` will be set to as follows (ignoring the `_marginDelta` for simplicity's sake)
+
+```solidity
+newMarginDepositedTotal = _globalPositions.marginDepositedTotal + _marginDelta + profitLossTotal
+newMarginDepositedTotal = 8 ETH + 0 + (-8 ETH) = 0 ETH
+```
+
+What happened above is that 8 ETH collateral is deducted from the long traders and transferred to LP. When `newMarginDepositedTotal` is zero, this means that the long trader no longer owns any collateral. This is incorrect, as Bob's position should still contribute 1 ETH remaining margin to the long trader's pool.
+
+Let's review Alice's Long Position 1: Her position's settled margin is -1 ETH. When the settled margin is -ve then the LPs have to bear the cost of loss per the comment [here](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LiquidationModule.sol#L139). However, in this case, we can see that it is Bob (long trader) instead of LPs who are bearing the cost of Alice's loss, which is incorrect.
+
+Let's review Bob's Long Position 2: His position's settled margin is 1 ETH. If his position's liquidation margin is $LM$, Bob should be able to withdraw $1\  ETH - LM$ of his position's margin. However, in this case, the `marginDepositedTotal` is already zero, so there is no more collateral left on the long trader pool for Bob to withdraw, which is incorrect.
+
+With the current implementation, the losses of some long traders can eat into the margins of others, resulting in those affected long traders being unable to withdraw their margin and profits.
+
+https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L173
+
+```solidity
+being File: FlatcoinVault.sol
+173:     function updateGlobalPositionData(
+174:         uint256 _price,
+175:         int256 _marginDelta,
+176:         int256 _additionalSizeDelta
+177:     ) external onlyAuthorizedModule {
+178:         // Get the total profit loss and update the margin deposited total.
+179:         int256 profitLossTotal = PerpMath._profitLossTotal({globalPosition: _globalPositions, price: _price});
+180: 
+181:         // Note that technically, even the funding fees should be accounted for when computing the margin deposited total.
+182:         // However, since the funding fees are settled at the same time as the global position data is updated,
+183:         // we can ignore the funding fees here.
+184:         int256 newMarginDepositedTotal = int256(_globalPositions.marginDepositedTotal) + _marginDelta + profitLossTotal;
+185: 
+186:         // Check that the sum of margin of all the leverage traders is not negative.
+187:         // Rounding errors shouldn't result in a negative margin deposited total given that
+188:         // we are rounding down the profit loss of the position.
+189:         // If anything, after closing the last position in the system, the `marginDepositedTotal` should can be positive.
+190:         // The margin may be negative if liquidations are not happening in a timely manner.
+191:         if (newMarginDepositedTotal < 0) {
+192:             revert FlatcoinErrors.InsufficientGlobalMargin();
+193:         }
+194: 
+195:         _globalPositions = FlatcoinStructs.GlobalPositions({
+196:             marginDepositedTotal: uint256(newMarginDepositedTotal),
+197:             sizeOpenedTotal: (int256(_globalPositions.sizeOpenedTotal) + _additionalSizeDelta).toUint256(),
+198:             lastPrice: _price
+199:         });
+200: 
+201:         // Profit loss of leverage traders has to be accounted for by adjusting the stable collateral total.
+202:         // Note that technically, even the funding fees should be accounted for when computing the stable collateral total.
+203:         // However, since the funding fees are settled at the same time as the global position data is updated,
+204:         // we can ignore the funding fees here
+205:         _updateStableCollateralTotal(-profitLossTotal);
+206:     }
+```
+
+## Impact
+
+Loss of assets for the long traders as the losses of some long traders can eat into the margins of others, resulting in those affected long traders being unable to withdraw their margin and profits.
+
+## Code Snippet
+
+https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L173
+
+## Tool used
+
+Manual Review
+
+## Recommendation
+
+The following are the two issues identified earlier and the recommended fixes:
+
+**Issue 1**
+
+> Let's review Alice's Long Position 1: Her position's settled margin is -1 ETH. When the settled margin is -ve then the LPs have to bear the cost of loss per the comment [here](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LiquidationModule.sol#L139). However, in this case, we can see that it is Bob (long trader) instead of LPs who are bearing the cost of Alice's loss, which is incorrect.
+
+Fix: Alice -1 ETH loss should be borne by the LP, not the long traders. The stable collateral total of LP should be deducted by 1 ETH to bear the cost of the loss.
+
+**Issue 2**
+
+> Let's review Bob's Long Position 2: His position's settled margin is 1 ETH. If his position's liquidation margin is $LM$, Bob should be able to withdraw $1\  ETH - LM$ of his position's margin. However, in this case, the `marginDepositedTotal` is already zero, so there is no more collateral left on the long trader pool for Bob to withdraw, which is incorrect.
+
+Fix: Bob should be able to withdraw $1\  ETH - LM$ of his position's margin regardless of the PnL of other long traders. Bob's margin should be isolated from Alice's loss.
+
+
+
+## Discussion
+
+**sherlock-admin**
+
+1 comment(s) were left on this issue during the judging contest.
+
+**takarez** commented:
+>  valid: high(7)
+
+
+
+**0xLogos**
+
+Escalate 
+
+Invalid (maybe medium if I'm missing something, clearly not high)
+
+Isn't described scenario is just a speculation? Why Alice's long position was not liquidated earlier? Even if price dropped that significant in ~1 minute there is still enough time to liquidate.
+
+**sherlock-admin2**
+
+> Escalate 
+> 
+> Invalid (maybe medium if I'm missing something, clearly not high)
+> 
+> Isn't described scenario is just a speculation? Why Alice's long position was not liquidated earlier? Even if price dropped that significant in ~1 minute there is still enough time to liquidate.
+
+You've created a valid escalation!
+
+To remove the escalation from consideration: Delete your comment.
+
+You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
+
+**securitygrid**
+
+The judge should consider whether the scenario or the assumed system state (the value of some variables) described in a report will actually occur or not. This is important.
+
+The scenario described in this report is unlikely to occur. Because Alice's position should have been liquidated before T1, why did it have to wait until bad debts occurred before it was liquidated?
+If the protocol has only one keeper, then such a scenario may occur when the keeper goes down. However, the protocol has multiple keepers: from third parties and from the protocol itself. It is impossible for all keepers going down.
+
+**xiaoming9090**
+
+The issue stands valid and remains high as it leads to a loss of assets for the long traders, as described in the "impact" section of the report. 
+
+The scenario is a valid example to demonstrate the issue on hand. The points related to the timing of the liquidation in the escalation are irrelevant, as the bugs will be triggered when liquidation is executed.
+
+Also, we cannot expect the liquidator keeper always to liquidate the accounts before the settled margin falls below zero (bad debt) under all circumstances due to many reasons (e.g., the price dropped too fast, delay due to too many TX queues at sequencer, time delay between the oracle and market price)
+
+The scenario where the settled margin falls below zero (bad debt) is absolutely something that will happen in the real world. In the code of the liquidation function [here](https://github.com/sherlock-audit/2023-12-flatmoney/blob/bba4f077a64f43fbd565f8983388d0e985cb85db/flatcoin-v1/src/LiquidationModule.sol#L139), even the protocol expected that the settled margin could fall below zero (bad debt) under some conditions and implement logic to handle this scenario.
+
+```solidity
+// If the settled margin is -ve then the LPs have to bear the cost.
+// Adjust the stable collateral total to account for user's profit/loss and the negative margin.
+// Note: We are adding `settledMargin` and `profitLoss` instead of subtracting because of their sign (which will be -ve).
+vault.updateStableCollateralTotal(settledMargin - positionSummary.profitLoss);
+```
+
+#
+
+**Czar102**
+
+Would like sponsors to comment on this issue @D-Ig @itsermin @rashtrakoff – is it unintended?
+@nevillehuang any thoughts?
+
+Given that this occurs on accrual of bad debt, I think it should be classified at most as a Medium severity issue.
+
+**rashtrakoff**
+
+The old math (that is math being used in the audit version of contracts) had this side effect. The new math fixes this along with other issues.
+
+**Czar102**
+
+Thank you @rashtrakoff.
+
+Planning to accept the escalation and consider this a Medium severity issue.
+
+**nevillehuang**
+
+> Thank you @rashtrakoff.
+> 
+> Planning to accept the escalation and consider this a Medium severity issue.
+
+Agree to downgrade to medium severity
+
+**Czar102**
+
+Result:
+Medium
+Unique
+
+**sherlock-admin2**
+
+Escalations have been resolved successfully!
+
+Escalation status:
+- [0xLogos](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/198/#issuecomment-1956807320): accepted
+
+**sherlock-admin**
+
+The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/266.
+
+**sherlock-admin4**
+
+The Lead Senior Watson signed off on the fix.
+
+# Issue M-8: Oracle can return different prices in same transaction 
 
 Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/216 
 
@@ -4384,2471 +4338,4 @@ Escalations have been resolved successfully!
 Escalation status:
 - [0xLogos](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/216/#issuecomment-1956126680): accepted
 - [xiaoming9090](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/216/#issuecomment-1959552564): rejected
-
-# Issue H-16: Malicious User can create a position that nobody can liquidate 
-
-Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/227 
-
-## Found by 
-0xMAKEOUTHILL, LTDingZhen
-## Summary
-
-In function `executeClose`, after burning an NFT, it will only detect and clear existing limit orders, but not detect existing delayed orders. This allows an attacker to add margin and increase position size to a `tokenID` where no NFT exists to create a position that cannot be liquidated. The platform risks having bad debt that cannot be eliminated.
-
-## Vulnerability Detail
-
-In flatcoin protocol, user can close a position by calling `announceLimitOrder` or `announceLeverageClose`. When keepers try to execute the limit order or the delayed order, function `executeClose` in LeverageModule is called. In `executeClose`, there is a check for cancellation of any existing limit orders on the position, but **does not cancel an existing Delayed order** if `executeClose` is called by `executeLimitOrder()`!
-
-    function executeClose(
-        address _account,
-        address _keeper,
-        FlatcoinStructs.Order calldata _order
-    ) external whenNotPaused onlyAuthorizedModule returns (int256 settledMargin) {
-            ...
-            // Delete position storage
-            vault.deletePosition(announcedClose.tokenId);
-        }
-
-        // Cancel any existing limit order on the position
-        ILimitOrder(vault.moduleAddress(FlatcoinModuleKeys._LIMIT_ORDER_KEY)).cancelExistingLimitOrder(
-            announcedClose.tokenId
-        );
-
-        // A position NFT has to be unlocked before burning otherwise, the transfer to address(0) will fail.
-        _unlock(announcedClose.tokenId);
-        _burn(announcedClose.tokenId);
-
-        vault.updateStableCollateralTotal(int256(announcedClose.tradeFee)); // pay the trade fee to stable LPs
-
-        // Settle the collateral.
-        vault.sendCollateral({to: _keeper, amount: _order.keeperFee}); // pay the keeper their fee
-        vault.sendCollateral({to: _account, amount: uint256(settledMargin) - totalFee}); // transfer remaining amount to the trader
-
-        emit FlatcoinEvents.LeverageClose(announcedClose.tokenId);
-    }
-
-When performing leverage adjustments, since the validation of the caller's possession of the NFT is performed at `announceLeverageAdjust`, `executeAdjust` does not have a test for the existence of a current position, and allows a position with all parameters 0 to operate normally.
-
-Consider path below:
-
-1. Bob has a position and calls `announceLimitOrder` to create a limit order that can be executed immediately.
-2. Bob calls `announceLeverageAdjust` to create a delayed order to add some margin and increase position size. Since the limit order has not been executed at this time, all validations in `announceLeverageAdjust` will pass.
-3. a keeper execute the limit order to close Bob's position, and clear its storage. At this point, since only the presence of a limit order is checked, the delayed order is still valid.
-4. a keeper execute the delayed order, "create" a new position on the same tokenID. Because the NFT has been destroyed, its owner is address 0. Nobody can liquidate or close this position because OZ's ERC721 doesn't allow burning non-existent token.
-
-## Impact
-
-Attackers can create positions which nobody can liquidate, so there is a risk that the platform will incur bad debts that cannot be eliminated.
-
-## Code Snippet
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L255-L317
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L147-L248
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-In function executeClose, only cancel any existing limit order on the position is not enough. delayed order should also be canceled.
-
-
-
-## Discussion
-
-**sherlock-admin**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**takarez** commented:
->  valid: high(10)
-
-
-
-**rashtrakoff**
-
-I think the better solution would be to check if a position exists by either checking the owner of the position (should not be the null address) or the size of the position (should be strictly greater than 0).
-
-**nevillehuang**
-
-Escalate 
-
-@rashtrakoff I believe this is possibly misjudged by me as valid based on the PoC provided by a watson mentioned [here](https://discord.com/channels/812037309376495636/1199005620536356874/1209769782929264730)
-
-**sherlock-admin2**
-
-> Escalate 
-> 
-> @rashtrakoff I believe this is possibly misjudged by me as valid based on the PoC provided by a watson mentioned [here](https://discord.com/channels/812037309376495636/1199005620536356874/1209769782929264730)
-
-You've created a valid escalation!
-
-To remove the escalation from consideration: Delete your comment.
-
-You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
-
-**0xjuaan**
-
-POC here, was placed in `Liquidate.t.sol`
-```
-function test_cantLiquidatePosition() public {
-        setWethPrice(1000e8);
-
-        uint256 tokenId = announceAndExecuteDepositAndLeverageOpen({
-            traderAccount: alice,
-            keeperAccount: keeper,
-            depositAmount: 100e18,
-            margin: 10e18,
-            additionalSize: 30e18,
-            oraclePrice: 1000e8,
-            keeperFeeAmount: 0
-        });
-        
-        vm.prank(alice);
-        limitOrderProxy.announceLimitOrder(tokenId, 750e8, 1250e8);
-
-        // user announces order
-        announceAdjustLeverage(alice, tokenId, 3e18, 3e18, 0); //e Alice adds 3e18 margin, 1e18 size
-
-        skip(uint256(vaultProxy.minExecutabilityAge())); // must reach minimum executability time
-        
-        bytes[] memory priceUpdateData = getPriceUpdateData(1000e8);
-        limitOrderProxy.executeLimitOrder{value: 1}(tokenId, priceUpdateData);
-
-        // This reverts, due to [ERC721: invalid token ID]
-        executeAdjustLeverage(keeper, alice, 1000e8);
-    }
-```
-
-**securitygrid**
-
-Escalate
-This issue is not valid beacause the attack described in the report would not be successful.
-The attack scenario described in the report would not be successful.
-There are two situations for an adjustment order:
-1. If `announcedAdjust.additionalSizeAdjustment` is greater than 0, tx will revert [here](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L226).
-2. If `announcedAdjust.additionalSizeAdjustment` is equal to 0, it means that the position only has the margin provided by the attacker and does not have additionalSize. This will not lead to bad debts. Moreover, it is self-harm for the attacker.
-
-**sherlock-admin2**
-
-> Escalate
-> This issue is not valid beacause the attack described in the report would not be successful.
-> The attack scenario described in the report would not be successful.
-> There are two situations for an adjustment order:
-> 1. If `announcedAdjust.additionalSizeAdjustment` is greater than 0, tx will revert [here](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L226).
-> 2. If `announcedAdjust.additionalSizeAdjustment` is equal to 0, it means that the position only has the margin provided by the attacker and does not have additionalSize. This will not lead to bad debts. Moreover, it is self-harm for the attacker.
-
-You've created a valid escalation!
-
-To remove the escalation from consideration: Delete your comment.
-
-You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
-
-**RealLTDingZhen**
-
-Good catch. This issue is invalid. Even if `announcedAdjust.additionalSizeAdjustment` = 0 could pass the check, `checkLeverageCriteria(newMargin, newAdditionalSize)` would fail. So the path is not possible.
-
-**MAKEOUTHILL6**
-
-I agree this is invalid.
-
-
-**Czar102**
-
-Planning to accept the escalation and invalidate the issue.
-
-**Czar102**
-
-Result:
-Invalid
-Has duplicates
-
-**sherlock-admin2**
-
-Escalations have been resolved successfully!
-
-Escalation status:
-- [nevillehuang](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/227/#issuecomment-1956080317): accepted
-- [securitygrid](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/227/#issuecomment-1956108239): rejected
-
-**securitygrid**
-
-@Czar102 why was my escalation rejected?
-
-**Czar102**
-
-@securitygrid
-This is because the first escalation meant the same outcome (even though didn't state it explicitly), and only one escalation can be accepted on an issue not to punish the Lead Judge twice for the same mistake, so I accepted the first one.
-
-**securitygrid**
-
-@Czar102 Doesn't this affect my escalation ratio?
-
-# Issue M-1: Protocol won't be able to get rETH/USD price from OracleModule 
-
-Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/90 
-
-The protocol has acknowledged this issue.
-
-## Found by 
-Bauer, HSP, LTDingZhen, Psyduck, SBSecurity, dimulski, ge6a, ni8mare, shaka
-## Summary
-Protocol won't be able to get rETH/USD price from OracleModule because rETH/USD is supported by Chainlink on Base Chain.
-
-## Vulnerability Detail
-FlatMoney uses rETH as collateral and the price will be retrieved from Pyth Network Oracle, as said in the Audit Page:
-> **Are there any off-chain mechanisms or off-chain procedures for the protocol (keeper bots, input validation expectations, etc)?**
-
-> The protocol uses Pyth Network collateral (rETH) price feed. This is an offchain price that is pulled by the keeper and pushed onchain at time of any order execution.
-
-While Pyth is used as **Offchain Oracle**, Chainlink Price Feed is used as **Onchain oracle**, when [get price](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/OracleModule.sol#L86) from **OracleModule**, protocol will check the **diffPercent** between the 2 oracles and the transaction will revert if **diffPercent** is larger than **maxDiffPercent**:
-```solidity
-        uint256 priceDiff = (int256(onchainPrice) - int256(offchainPrice)).abs();
-        uint256 diffPercent = (priceDiff * 1e18) / onchainPrice;
-        if (diffPercent > maxDiffPercent) revert FlatcoinErrors.PriceMismatch(diffPercent);
-```
-
-Because it only makes sense to compare the price of the same collateral token, as rETH/USD price is retrieved from Pyth Oracle, the Chainlink Price Feed should also return rETH/USD. Unfortunately, rETH/USD is not supported by Chainlink on Base Chain, so there is no way to get rETH/USD price. 
-
-Protocol may choose an alternative Chainlink Price Feed, for example, ETH/USD, however, the price difference between ETH and rETH can be significant (at the time of wrting, [RETH / ETH](https://www.coingecko.com/en/coins/rocket-pool-eth/eth) is `1.1`), results in **diffPercent** being much larger than a rational **maxDiffPercent** and transaction will always revert, protocol won't be able to get price from OracleModule and this renders the whole protocol useless.
-
-## Impact
-Protocol won't be able to get price from **OracleModule**, and protocol becomes useless.
-
-## Code Snippet
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/OracleModule.sol#L106
-
-## Tool used
-Manual Review
-
-## Recommendation
-Protocol should combine 2 Chainlink Price Feeds ([ETH/USD](0x71041dddad3595F9CEd3DcCFBe3D1F4b0a16Bb70) and [rETH/ETH](0xf397bF97280B488cA19ee3093E81C0a77F02e9a5)) to get the rETH/USD price data on Base Chain.
-
-
-
-## Discussion
-
-**sherlock-admin**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**takarez** commented:
->  invalid: 
-
-
-
-**nevillehuang**
-
-@rashtrakoff I believe this is a valid medium severity issue, there indeed are no rETH/USD chainlink oracles on base chain. Based on code logic during the time of contest, wouldn't this cause a revert?
-
-**rashtrakoff**
-
-@nevillehuang , the protocol couldn't have been deployed if we didn't have rETH/USD oracle. It was an oversight on our behalf to not have properly checked the oracles available. We already have an audited version of contracts to get rETH/USD price based on rETH/ETH exchange rate and ETH/USD price. We internally don't believe this to be an issue but given that the code indeed wouldn't have worked/depolyable, we understand if you decide this as an issue. Cc @itsermin @D-Ig.
-
-**sherlock-admin2**
-
-> Escalate
-> 
-> This issue should be HIGH as it renders the protocol unworkable/undeployable.
-> 
-> 
-
-You've deleted an escalation for this issue.
-
-**securitygrid**
-
-Escalate
-This is not valid. This is not a matter of contract.
-
-**sherlock-admin2**
-
-> Escalate
-> This is not valid. This is not a matter of contract.
-
-You've created a valid escalation!
-
-To remove the escalation from consideration: Delete your comment.
-
-You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
-
-**xiaoming9090**
-
-Escalate.
-
-The protocol would not even be deployed without the rETH/USD oracle. Thus, there is no possibility of this issue occurring to begin with. So, a Low is more appropriate for this issue.
-
-**sherlock-admin2**
-
-> Escalate.
-> 
-> The protocol would not even be deployed without the rETH/USD oracle. Thus, there is no possibility of this issue occurring to begin with. So, a Low is more appropriate for this issue.
-
-You've created a valid escalation!
-
-To remove the escalation from consideration: Delete your comment.
-
-You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
-
-**midori-fuse**
-
-A criteria for medium risk is that
-
-> Breaks core contract functionality, rendering the contract useless or leading to loss of funds.
-
-Because:
-- The broken core functionality is the fetching of rETH/USD price.
-- Since the contract cannot be deployed without a code change, the contract is rendered useless.
-- This issue cannot be fixed without an in-scope code change, and the info of the other oracle was not present as part of the contest.
-
-It certainly qualifies as a medium risk issue by the rules does it not?
-
-**itsermin**
-
-Just to chime in here. There will be no code change here. The oracle contract will be provided by dHedge protocol: https://github.com/dhedge/V2-Public/blob/master/contracts/priceAggregators/ETHCrossAggregator.sol
-
-This contract can combine the rETH/ETH and ETH/USD oracles.
-
-**midori-fuse**
-
-"Not using the in-scope code, but externally provided code" is itself a code change.
-
-The validity of this issue then comes down to whether the contest documentation mention or imply that the OracleModule contract was the intended oracle.
-- This can apply if there are no other in-scope oracle contracts, and the contest docs do not mention the existence of another oracle module. Then it's a valid deduction that the only oracle in the contest scope has to be the intended oracle.
-
-If a conclusion of an external oracle cannot be reasonably reached using the given contest resources, then this issue should fit into the medium criteria.
-
-**NishithPat**
-
-> The protocol would not even be deployed without the rETH/USD oracle. Thus, there is no possibility of this issue occurring to begin with. So, a Low is more appropriate for this issue.
-
-Yes, but Watsons are supposed to audit the code that's given to them. In the current state of the code, this is indeed an issue. 
-
-**nevillehuang**
-
-Agree with @midori-fuse points, I believe this should remain as medium severity, given the original contract cannot integrate the intended rETH/USD oracle originally, and required a completely new separate [contract as mentioned by the sponsor](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/90#issuecomment-1959718314).
-
-**Evert0x**
-
-Planning to accept escalation and invalidate issue
-
-There are no funds at risk since the protocol wouldn't be able to get deployed
-
-
-**midori-fuse**
-
-@Evert0x Can you please provide explanation on why it doesn't fit in the [second criteria of medium severity](https://docs.sherlock.xyz/audits/judging/judging#v.-how-to-identify-a-medium-issue)? The criteria certainly mentions rendering the contract useless as a condition.
-
-Furthermore, if the reasoning is that protocol cannot be deployed, then all findings are invalid since the protocol won't be deployed anyway isn't it?
-
-**0xjuaan**
-
-I believe that the root cause for this bug would be an incorrect deployment script. However the deployment script is out of scope. 
-
-**midori-fuse**
-
-Understandable. I do not have more context to add then.
-
-**RealLTDingZhen**
-
-I have a few things to add:
-
-Sherlock used to always think that the inability to deploy/use the current version of the contract's code on a specific chain was a valid problem:
-
-[pengun - CREATE3 is not available in the zkSync Era.](https://github.com/sherlock-audit/2023-09-Gitcoin-judging/issues/862)
-
-[HHK - computePoolAddress() will not work on ZkSync Era](https://github.com/sherlock-audit/2023-10-real-wagmi-judging/issues/104)
-
-I know that 'Historical decisions are no longer considered sources of truth.' , but I believe the comments made by [Evert](https://github.com/sherlock-audit/2023-09-Gitcoin-judging/issues/862#issuecomment-1777391236) and [Czar](https://github.com/sherlock-audit/2023-10-real-wagmi-judging/issues/104#issuecomment-1784859538) was enough to justify the question.
-
-And, this issue cannot be solved by updating deployment script.
-
-**0xjuaan**
-
-> And, this issue cannot be solved by updating deployment script.
-
-It actually can be fixed in the deployment script, by just setting the oracle address to the address of this [contract](https://github.com/dhedge/V2-Public/blob/master/contracts/priceAggregators/ETHCrossAggregator.sol) that was made by the protocol team, and already audited (according to them).
-
-**0xhsp**
-
-> > And, this issue cannot be solved by updating deployment script.
-> 
-> It actually can be fixed in the deployment script, by just setting the oracle address to the address of this [contract](https://github.com/dhedge/V2-Public/blob/master/contracts/priceAggregators/ETHCrossAggregator.sol) that was made by the protocol team, and already audited (according to them).
-
-Disagree. There is no evidence provided to Watsons in the public domain during the audit contest period (22 Jan to 4 Feb) that states that the protocol team will set the oracle address to the address of this [contract](https://github.com/dhedge/V2-Public/blob/master/contracts/priceAggregators/ETHCrossAggregator.sol) that was made by the protocol team.
-
-**0xjuaan**
-
-@0xhsp yes, that is correct. but the fix to this issue raised would involve a change in the deployment script, which is out of scope.
-
-**0xhsp**
-
-@0xjuaan Since the contract you mentioned is not known during the contest period, the code change should be considered as the only way to mitigate the issue. Otherwise all the valid issue can be invalidated as the affected contracts can be replaced by a new contract.
-
-**0xjuaan**
-
-that's a good point. we will see what judges say
-
-**nevillehuang**
-
-I too have no additional comments to add and stand by my previous [comment here](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/90#issuecomment-1961017870), that this should maintain as medium severity given the whole oracle contract code logic was changed to integrated into the deployment script.
-
-**Czar102**
-
-I'd like to draw a clear line between different types of vulnerabilities.
-
-There are bugs that cause the codebase not to work at all (like mentioned https://github.com/sherlock-audit/2023-10-real-wagmi-judging/issues/104) and these are valid Medium severity issues.
-
-There are also bugs that prevent the contracts from being properly deployed/initialized, and these are considered of Low/Informational severity:
-> 7. **Front-running initializers:** Front-running initializers where there is no irreversible damage or loss of funds & the protocol could just redeploy and initialize again is not a valid issue.
-
-I must claim that one needs to slightly extrapolate this rule, and this will be corrected in the rules to be more generalized.
-
-Anyway, for this issue I think there are grounds for invalidation anyway – Chainlink can be asked to introduce an additional feed. They can provide it for a small fee.
-
-Maintaining Sherlock's stance to accept an escalation and invalidate the issue.
-
-**RealLTDingZhen**
-
-Fair enough, I would respect Sherlock's decision.
-
-But I can't understand how `Chainlink can be asked to introduce an additional feed.` could be the reason to invalidate a issue.
-Such statement could invalidate most Chainlink-related issues which were regarded M/H😂
-
-**gstoyanovbg**
-
-@Evert0x @Czar102 Reading the comments, I am quite confused by Sherlock's decision. As far as I understand, the main argument for invalidating this report is that the protocol wouldn't be able to get deployed. I disagree with that. The protocol can be deployed with 2 incompatible feeds, as described in the report. This will result in non-functioning core features, which, as mentioned above, fully meets the criteria for a Medium severity issue described by Sherlock. I want to emphasize again that an auditor cannot know what the sponsors think and whether they are aware that their code will not work with the available feeds.
-
-@Czar102 , with all due respect, it takes a great deal of imagination to fit the current report into the definition from point 7. Before submitting this report, I carefully examined the validity criteria several times and found no grounds to invalidate it. It seems that I am not alone, as many other auditors, including the lead judge, have made same conclusion. A new auditor who is not familiar with the way the Sherlock team reasons cannot, based solely on the validity criteria, conclude that the report is not valid. This would not be a problem if there were no penalties for invalid reports, but there are. And it turns out that auditors would be penalized with worsened ratios due to flaws in the validity criteria, which is unfair in my opinion.
-
-If this trend continues, auditors will stop submitting such reports, and at some point it will turn out that some protocol passed the Sherlock audit without problems and at the same time is totally broken.
-
-**Czar102**
-
-@RealLTDingZhen we are focusing on vulnerabilities here, not on technical difficulties of deployment.
-
-@gstoyanovbg deploying with 2 incompatible feeds would be a deployment mistake, and we don't consider that scenario.
-
-**Czar102**
-
-Result:
-Low
-Has duplicates
-
-Rejecting the second escalation since the first escalation already proposed the correct outcome.
-
-**sherlock-admin2**
-
-Escalations have been resolved successfully!
-
-Escalation status:
-- [securitygrid](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/90/#issuecomment-1956265616): accepted
-- [xiaoming9090](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/90/#issuecomment-1959554464): rejected
-
-# Issue M-2: Fees are ignored when checks skew max in Stable Withdrawal /  Leverage Open / Leverage Adjust 
-
-Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/92 
-
-## Found by 
-HSP
-## Summary
-Fees are ignored when checks skew max in Stable Withdrawal / Leverage Open / Leverage Adjust.
-
-## Vulnerability Detail
-When user [withdrawal from the stable LP](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/StableModule.sol#L96-L100), vault **total stable collateral** is updated:
-```solidity
-        vault.updateStableCollateralTotal(-int256(_amountOut));
-```
-Then **_withdrawFee** is calculated and [checkSkewMax(...)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L296) function is called to ensure that the system will not be too skewed towards longs:
-```solidity
-            // Apply the withdraw fee if it's not the final withdrawal.
-            _withdrawFee = (stableWithdrawFee * _amountOut) / 1e18;
-
-            // additionalSkew = 0 because withdrawal was already processed above.
-            vault.checkSkewMax({additionalSkew: 0});
-```
-At the end of the execution, vault collateral is settled again with **withdrawFee**, keeper receives **keeperFee** and `(amountOut - totalFee)` amount of collaterals are transferred to the user:
-```solidity
-        // include the fees here to check for slippage
-        amountOut -= totalFee;
-
-        if (amountOut < stableWithdraw.minAmountOut)
-            revert FlatcoinErrors.HighSlippage(amountOut, stableWithdraw.minAmountOut);
-
-        // Settle the collateral
-        vault.updateStableCollateralTotal(int256(withdrawFee)); // pay the withdrawal fee to stable LPs
-        vault.sendCollateral({to: msg.sender, amount: order.keeperFee}); // pay the keeper their fee
-        vault.sendCollateral({to: account, amount: amountOut}); // transfer remaining amount to the trader
-```
-The `totalFee` is composed of keeper fee and withdrawal fee:
-```solidity
-        uint256 totalFee = order.keeperFee + withdrawFee;
-```
-This means withdrawal fee is still in the vault, however this fee is ignored when checks skew max and protocol may revert on a safe withdrawal. Consider the following scenario:
-1. **skewFractionMax** is `120%` and **stableWithdrawFee** is `1%`;
-2. Alice deposits `100` collateral and Bob opens a leverage position with size `100`;
-3. At the moment, there is `100` collaterals in the Vault, **skew** is `0` and **skew fraction** is `100%`;
-4. Alice tries to withdraw `16.8` collaterals,  **withdrawFee** is `0.168`, after withdrawal, it is expected that there is `83.368` stable collaterals in the Vault, so **skewFraction** should be `119.5%`, which is less than **skewFractionMax**;
-5. However, the withdrawal will actually fail because when protocol checks skew max, **withdrawFee** is ignored and the **skewFraction** turns out to be `120.19%`, which is higher than **skewFractionMax**.
-
-The same issue may occur when protocol executes a [leverage open](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L80-L84) and [leverage adjust](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L147-L151), in both executions, **tradeFee**  is ignored when checks skew max.
-
-Please see the test codes:
-```solidity
-    function test_audit_withdraw_fee_ignored_when_checks_skew_max() public {
-        // skewFractionMax is 120%
-        uint256 skewFractionMax = vaultProxy.skewFractionMax();
-        assertEq(skewFractionMax, 120e16);
-
-        // withdraw fee is 1%
-        vm.prank(vaultProxy.owner());
-        stableModProxy.setStableWithdrawFee(1e16);
-
-        uint256 collateralPrice = 1000e8;
-
-        uint256 depositAmount = 100e18;
-        announceAndExecuteDeposit({
-            traderAccount: alice,
-            keeperAccount: keeper,
-            depositAmount: depositAmount,
-            oraclePrice: collateralPrice,
-            keeperFeeAmount: 0
-        });
-
-        uint256 additionalSize = 100e18;
-        announceAndExecuteLeverageOpen({
-            traderAccount: bob,
-            keeperAccount: keeper,
-            margin: 50e18,
-            additionalSize: 100e18,
-            oraclePrice: collateralPrice,
-            keeperFeeAmount: 0
-        });
-
-        // After leverage Open, skew is 0
-        int256 skewAfterLeverageOpen = vaultProxy.getCurrentSkew();
-        assertEq(skewAfterLeverageOpen, 0);
-        // skew fraction is 100%
-        uint256 skewFractionAfterLeverageOpen = getLongSkewFraction();
-        assertEq(skewFractionAfterLeverageOpen, 1e18);
-
-        // Note: comment out `vault.checkSkewMax({additionalSkew: 0})` and below lines to see the actual skew fraction
-        // Alice withdraws 16.8 collateral
-        // uint256 aliceLpBalance = stableModProxy.balanceOf(alice);
-        // announceAndExecuteWithdraw({
-        //     traderAccount: alice, 
-        //     keeperAccount: keeper, 
-        //     withdrawAmount: 168e17, 
-        //     oraclePrice: collateralPrice, 
-        //     keeperFeeAmount: 0
-        // });
-
-        // // After withdrawal, the actual skew fraction is 119.9%, less than skewFractionMax
-        // uint256 skewFactionAfterWithdrawal = getLongSkewFraction();
-        // assertEq(skewFactionAfterWithdrawal, 1199501007580846367);
-
-        // console2.log(WETH.balanceOf(address(vaultProxy)));
-    }
-```
-
-## Impact
-Protocol may wrongly prevent a Stable Withdrawal / Leverage Open / Leverage Adjust even if the execution is essentially safe.
-
-## Code Snippet
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/StableModule.sol#L130
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L101
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L166
-
-## Tool used
-Manual Review
-
-## Recommendation
-Include withdrawal fee / trade fee when check skew max.
-
-
-
-## Discussion
-
-**sherlock-admin**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**takarez** commented:
->  invalid
-
-
-
-**0xLogos**
-
-Escalate 
-
-Low. Exceeding skewFractionMax is possible only by a fraction of a percent 
-
-**sherlock-admin2**
-
-> Escalate 
-> 
-> Low. Exceeding skewFractionMax is possible only by a fraction of a percent 
-
-You've created a valid escalation!
-
-To remove the escalation from consideration: Delete your comment.
-
-You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
-
-**santipu03**
-
-Agree with @0xLogos. The withdrawal fee is a tiny amount compared to the total deposited collateral, therefore the impact will be almost imperceptible. The severity should be LOW. 
-
-**0xhsp**
-
-This issue is valid.
-
-The fee maybe a tiny amount compared to the total deposited collateral, but **the impact is significant to individual users**.
-
-Let's assume **stableCollateralTotal** is 1000 ether, **stableWithdrawFee** is 1%, **skewFractionMax** is 120% and current **skewFraction** is 60%.
-
-> If withdrawal fee is ignored in the calculation of shew fraction, **withdrawAmount** is calculated as:
-
-<img width="508" alt="1" src="https://github.com/sherlock-audit/2023-12-flatmoney-judging/assets/155340699/45adbabb-49fc-4a0e-9414-ada424ba0091">
-
-> If withdrawal fee is considered in the calculation of shew fraction, **withdrawAmount** is calculated as:
-
-<img width="702" alt="2" src="https://github.com/sherlock-audit/2023-12-flatmoney-judging/assets/155340699/e557c8b9-6bfa-40df-ac20-69bcc955c43f">
-
-We can notice that **5 ether less** collaterals ethers are withdrawable if fee is ignored. Just be realistic, individual user is most likely to deposit a tiny amount of collaterals, this means **many users are unable to withdraw any of their collaterals even if it is safe to do so**.
-
-Similarly, since **tradeFee** is ignored when protocol checks a leverage open/adjustment, **many traders would be wrongly prevented from opening/adjusting any positions**.
-
-
-**0xLogos**
-
-In first pic after withdrawing for example 300 eth, fee for that amount will be included in the next withdrawal and so forth so eventually all 505 eth can be withdrawn. Note that it's not work around, just how things work in most cases.
-
-**0xhsp**
-
-It's not about how much user can withdraw but if user can withdraw whenever it is safe. 
-
-Given after withdrawing for example 300 eth, users expect to be able to withdraw 353.5 ether more but are only allowed 350 ether due to the issue.
-
-Incorrect checking is a high risk to the protocol, it is difficult to predict how users will operate but it would eventually cause huge impact if we ignore the risk.
-
-**santipu03**
-
-The margin error on the calculation of `checkSkewMax` will be equal to the `tradeFee` on that operation. When the operation is using a huge amount (500 ETH), the margin error of the calculation will be of 5 ETH (assuming a 1% `tradeFee`). But if 10 users withdraw 50 ETH each, the margin error will only be 0.5 ETH on the last withdrawal.
-
-To trigger this issue with a non-trivial margin error, it requires a user that withdraws collateral (or creates or adjusts a position) with a huge amount compared to the total collateral deposited. 
-
-Given the low probability of this issue happening with a non-trivial margin error and the impact being medium/low, I'd consider the overall severity of this issue to be LOW.
-
-**0xhsp**
-
-The probability should be medium as you cannot predict the wild market, the impact can be high since usera may suffer a loss due to price fluncation if they cannot withdraw in time. So it's fair to say the servrity is medium.
-
-**sherlock-admin**
-
-The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/280.
-
-**Evert0x**
-
-It seems to me that the issue described can negatively affect users and breaks core contract functionality in specific (but not unrealistic) scenarios https://docs.sherlock.xyz/audits/judging/judging#v.-how-to-identify-a-medium-issue
-
-Tentatively planning to reject the escalation and keep the issue state as is, but will revisit it later. 
-
-**Evert0x**
-
-Planning to continue with my judgment as stated in the comment above. 
-
-**Czar102**
-
-Result:
-Medium
-Unique
-
-**sherlock-admin2**
-
-Escalations have been resolved successfully!
-
-Escalation status:
-- [0xLogos](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/92/#issuecomment-1956105454): rejected
-
-# Issue M-3: StableModule.stableCollateralPerShare may return 0 in edge case 
-
-Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/142 
-
-The protocol has acknowledged this issue.
-
-## Found by 
-Bauer, nobody2018, ravikiran.web3
-## Summary
-
-[[DelayedOrder.announceStableDeposit](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/DelayedOrder.sol#L67-L71)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/DelayedOrder.sol#L67-L71) will [[call StableModule.stableDepositQuote to calculate quotedAmount](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/DelayedOrder.sol#L80-L81)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/DelayedOrder.sol#L80-L81). If [[StableModule.stableCollateralPerShare](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/StableModule.sol#L208)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/StableModule.sol#L208) returns 0, then tx will be revert due to a divide-by-zero error. Therefore, the short side cannot deposit collateral.
-
-## Vulnerability Detail
-
-```solidity
-File: flatcoin-v1\src\DelayedOrder.sol
-067:     function announceStableDeposit(
-068:         uint256 depositAmount,
-069:         uint256 minAmountOut,
-070:         uint256 keeperFee
-071:     ) external whenNotPaused {
-......
-080:         uint256 quotedAmount = IStableModule(vault.moduleAddress(FlatcoinModuleKeys._STABLE_MODULE_KEY))
-081:->           .stableDepositQuote(depositAmount);
-......
-102:     }
-
-File: flatcoin-v1\src\StableModule.sol
-224:     function stableDepositQuote(uint256 _depositAmount) public view returns (uint256 _amountOut) {
-225:->       return (_depositAmount * (10 ** decimals())) / stableCollateralPerShare();
-226:     }
-```
-
-L225, if `stableCollateralPerShare()` returns 0, a divide-by-zero error will occur.
-
-```solidity
-File: flatcoin-v1\src\StableModule.sol
-208:     function stableCollateralPerShare(uint32 _maxAge) public view returns (uint256 _collateralPerShare) {
-209:         uint256 totalSupply = totalSupply();
-210: 
-211:         if (totalSupply > 0) {
-212:->           uint256 stableBalance = stableCollateralTotalAfterSettlement(_maxAge);
-213: 		 //@audit if stableBalance is 0, _collateralPerShare is also 0.
-214:->           _collateralPerShare = (stableBalance * (10 ** decimals())) / totalSupply;
-215:         } else {
-216:             // no shares have been minted yet
-217:             _collateralPerShare = 1e18;
-218:         }
-219:     }
-```
-
-Under what circumstances will `stableCollateralTotalAfterSettlement(_maxAge)` return 0?
-
-```solidity
-File: flatcoin-v1\src\StableModule.sol
-173:     function stableCollateralTotalAfterSettlement(
-174:         uint32 _maxAge
-175:     ) public view returns (uint256 _stableCollateralBalance) {
-176:         // Assumption => pnlTotal = pnlLong + fundingAccruedLong
-177:         // The assumption is based on the fact that stable LPs are the counterparty to leverage traders.
-178:         // If the `pnlLong` is +ve that means the traders won and the LPs lost between the last funding rate update and now.
-179:         // Similary if the `fundingAccruedLong` is +ve that means the market was skewed short-side.
-180:         // When we combine these two terms, we get the total profit/loss of the leverage traders.
-181:         // NOTE: This function if called after settlement returns only the PnL as funding has already been adjusted
-182:         //      due to calling `_settleFundingFees()`. Although this still means `netTotal` includes the funding
-183:         //      adjusted long PnL, it might not be clear to the reader of the code.
-184:->       int256 netTotal = ILeverageModule(vault.moduleAddress(FlatcoinModuleKeys._LEVERAGE_MODULE_KEY))
-185:             .fundingAdjustedLongPnLTotal({maxAge: _maxAge});
-186: 
-187:         // The flatcoin LPs are the counterparty to the leverage traders.
-188:         // So when the traders win, the flatcoin LPs lose and vice versa.
-189:         // Therefore we subtract the leverage trader profits and add the losses
-190:->       int256 totalAfterSettlement = int256(vault.stableCollateralTotal()) - netTotal;
-191: 
-192:         if (totalAfterSettlement < 0) {
-193:->           _stableCollateralBalance = 0;
-194:         } else {
-195:             _stableCollateralBalance = uint256(totalAfterSettlement);
-196:         }
-197:     }
-```
-
-As long as `netTotal` calculated by L184 is greater than or equal to `vault.stableCollateralTotal()`, then `_stableCollateralBalance` is 0.
-
-[[LeverageModule.fundingAdjustedLongPnLTotal](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L397-L411)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L397-L411) returns the total profit and loss of all the leverage positions (long side). A positive netTotal means the collateral price pumps, and vice versa. And `vault.stableCollateralTotal()` represents the funds of the short side.
-
-Imagine: if the price of the collateral rises sharply due to the occurrence of an good news, then the long side's `netTotal` is likely to be greater than the short side's `stableCollateralTotal`. In this way, `stableCollateralTotalAfterSettlement` may return 0. This will cause a division by zero error.  
-Because the price of collateral rises sharply, the sentiment of short side will increase. However, the short side will be unable to deposit collateral via `DelayedOrder.announceStableDeposit`.
-
-## Impact
-
-If the above situation occurs, the short side will not be able to deposit collateral due to a divide-by-zero error. This is obviously unfair to the short side.
-
-## Code Snippet
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/DelayedOrder.sol#L80-L81
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/StableModule.sol#L212-L214
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/StableModule.sol#L184-L196
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-```solidity
-File: flatcoin-v1\src\StableModule.sol
-208:     function stableCollateralPerShare(uint32 _maxAge) public view returns (uint256 _collateralPerShare) {
-209:         uint256 totalSupply = totalSupply();
-210: 
-211:         if (totalSupply > 0) {
-212:             uint256 stableBalance = stableCollateralTotalAfterSettlement(_maxAge);
-213:+++          //If stableBalance is 0, special processing is performed so that _collateralPerShare cannot be 0.
-214:             _collateralPerShare = (stableBalance * (10 ** decimals())) / totalSupply;
-215:         } else {
-216:             // no shares have been minted yet
-217:             _collateralPerShare = 1e18;
-218:         }
-219:     }
-```
-
-
-
-## Discussion
-
-**sherlock-admin**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**takarez** commented:
->  invalid: no division by zero
-
-
-
-**0xLogos**
-
-Escalate
-
-Low, seems like acceptable risk because such situation really unlikely to happen (this basicly means flatcoin has no collateral backed).
-
-**sherlock-admin2**
-
-> Escalate
-> 
-> Low, seems like acceptable risk because such situation really unlikely to happen (this basicly means flatcoin has no collateral backed).
-
-You've created a valid escalation!
-
-To remove the escalation from consideration: Delete your comment.
-
-You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
-
-**securitygrid**
-
-can't understand what that escalation is saying.
-
-**0xcrunch**
-
-> As long as netTotal calculated by L184 is greater than or equal to vault.stableCollateralTotal(), then _stableCollateralBalance is 0.
-
-> Imagine: if the price of the collateral rises sharply due to the occurrence of an good news, then the long side's netTotal is likely to be greater than the short side's stableCollateralTotal. In this way, stableCollateralTotalAfterSettlement may return 0. This will cause a division by zero error.
-
-This is essentially  the known issue in the README:
-> Flatcoin can be net short and ETH goes up 5x in a short period of time, potentially leading to UNIT going to 0.
-The flatcoin holders should be mostly delta neutral, but they may be up to 20% short in certain market conditions (skewFractionMax parameter).
-The funding rate should balance this out, but theoretically, if ETH price increases by 5x in a short period of time whilst the flatcoin holders are 20% short, it's possible for flatcoin value to go to 0. This scenario is deemed to be extremely unlikely and the funding rate is able to move quickly enough to bring the flatcoin holders back to delta neutral.
-
-**Evert0x**
-
-Planning to accept the escalation and invalidate the report as it's describing a known issue/acceptable risk described in the README @securitygrid 
-
-**securitygrid**
-
-Agree 
-
-**Evert0x**
-
-Result:
-Invalid
-Has Duplicates
-
-**sherlock-admin2**
-
-Escalations have been resolved successfully!
-
-Escalation status:
-- [0xLogos](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/142/#issuecomment-1956162561): accepted
-
-# Issue M-4: In LeverageModule.executeOpen/executeAdjust, vault.checkSkewMax should be called after updating the global position data 
-
-Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/143 
-
-## Found by 
-ge6a, jennifer37, nobody2018, santipu\_
-## Summary
-
-[[checkSkewMax](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L296)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L296) is used to assert that the system will not be too skewed towards longs after additional skew is added. However, the `stableCollateralTotal` used by this function is a variable that will [[be updated by updateGlobalPositionData](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L205)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L205). Therefore, `checkSkewMax` should be executed after `updateGlobalPositionData`. Otherwise, there is no guarantee whether newly opened positions will make the system more skew towards long side.
-
-## Vulnerability Detail
-
-```solidity
-File: flatcoin-v1\src\LeverageModule.sol
-080:     function executeOpen(
-081:         address _account,
-082:         address _keeper,
-083:         FlatcoinStructs.Order calldata _order
-084:     ) external whenNotPaused onlyAuthorizedModule returns (uint256 _newTokenId) {
-......
-101:->       vault.checkSkewMax({additionalSkew: announcedOpen.additionalSize});
-102: 
-103:         {
-104:             // The margin change is equal to funding fees accrued to longs and the margin deposited by the trader.
-105:->           vault.updateGlobalPositionData({
-106:                 price: entryPrice,
-107:                 marginDelta: int256(announcedOpen.margin),
-108:                 additionalSizeDelta: int256(announcedOpen.additionalSize)
-109:             });
-......
-140:     }
-```
-
-L101, [[vault.checkSkewMax](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L296-L307)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L296-L307) internally calculates `longSkewFraction` by the formula `((_globalPositions.sizeOpenedTotal + _additionalSkew) * 1e18) / stableCollateralTotal`. This function guarantees that `longSkewFraction` will not exceed `skewFractionMax` ([[120%](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/scripts/deployment/configs/FlatcoinVault.config.js#L9)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/scripts/deployment/configs/FlatcoinVault.config.js#L9)).
-
-However, `stableCollateralTotal` will [[be updated in updateGlobalPositionData](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L205)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L205).
-
-- When `profitLossTotal` is positive value, then `stableCollateralTotal` will decrease.
-- When `profitLossTotal` is negative value, then `stableCollateralTotal` will increase.
-
-Assume the following:
-
-```data
-stableCollateralTotal = 90e18
-_globalPositions = {  
-    sizeOpenedTotal: 100e18,  
-    lastPrice: 1800e18,  
-}
-A new position is to be opened with additionalSize = 5e18.  
-fresh price=2000e18
-```
-
-We explain it in two situations:
-
-1. `checkSkewMax` is called before `updateGlobalPositionData`.
-
-```data
-longSkewFraction = (_globalPositions.sizeOpenedTotal + additionalSize) * 1e18 / stableCollateralTotal 
-                 = (100e18 + 5e18) * 1e18 / 90e18 
-                 = 1.16667e18 < skewFractionMax(1.2e18)
-so checkSkewMax will be passed.
-```
-
-2. `checkSkewMax` is called after `updateGlobalPositionData`.
-
-```data
-In updateGlobalPositionData:  
-PerpMath._profitLossTotal calculates
-profitLossTotal = _globalPositions.sizeOpenedTotal * (int256(price) - int256(globalPosition.lastPrice)) / int256(price) 
-                = 100e18 * (2000e18 - 1800e18) / 2000e18 = 100e18 * 200e18 /2000e18 
-                = 10e18 
-_updateStableCollateralTotal(-profitLossTotal) will deduct 10e18 from stableCollateralTotal. 
-so stableCollateralTotal = 90e18 - 10e18 = 80e18.  
-
-Now, checkSkewMax is called:  
-longSkewFraction = (_globalPositions.sizeOpenedTotal + additionalSize) * 1e18 / stableCollateralTotal 
-                 = (100e18 + 5e18) * 1e18 / 80e18 
-                 = 1.3125e18 > skewFractionMax(1.2e18)
-```
-
-Therefore, **this new position should not be allowed to open, as this will only make the system more skewed towards the long side**.
-
-## Impact
-
-The `stableCollateralTotal` used by `checkSkewMax` is the value of the total profit that has not yet been settled, which is old value. In this way, when the price of collateral rises, it will cause the system to be more skewed towards the long side.
-
-## Code Snippet
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L101-L109
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L166
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-```solidity
-File: flatcoin-v1\src\LeverageModule.sol
-080:     function executeOpen(
-081:         address _account,
-082:         address _keeper,
-083:         FlatcoinStructs.Order calldata _order
-084:     ) external whenNotPaused onlyAuthorizedModule returns (uint256 _newTokenId) {
-......
-101:---      vault.checkSkewMax({additionalSkew: announcedOpen.additionalSize});
-102: 
-103:         {
-104:             // The margin change is equal to funding fees accrued to longs and the margin deposited by the trader.
-105:             vault.updateGlobalPositionData({
-106:                 price: entryPrice,
-107:                 marginDelta: int256(announcedOpen.margin),
-108:                 additionalSizeDelta: int256(announcedOpen.additionalSize)
-109:             });
-+++              vault.checkSkewMax(0); //0 means that vault.updateGlobalPositionData has added announcedOpen.additionalSize.
-......
-140:     }
-```
-
-Also, if `announcedAdjust.additionalSizeAdjustment` is greater than 0 in [[executeAdjust](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L166)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L166), similar fix is required.
-
-
-
-## Discussion
-
-**sherlock-admin**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**takarez** commented:
->  valid: checkSkewMax should be adjusted; medium(6)
-
-
-
-**sherlock-admin**
-
-The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/266.
-
-**itsermin**
-
-Resolved here: https://github.com/dhedge/flatcoin-v1/pull/266
-Because collateral is no longer settled in `updateGlobalPositionData`
-
-# Issue M-5: In executeOrder, OracleModule.getPrice(maxAge) may revert because maxAge is too small 
-
-Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/170 
-
-The protocol has acknowledged this issue.
-
-## Found by 
-Dliteofficial, nobody2018
-## Summary
-
-[[executeOrder](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/DelayedOrder.sol#L378-L381)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/DelayedOrder.sol#L378-L381) will call different functions to process the order according to the type of order, and these functions will call `OracleModule.getPrice(maxAge)` to get the price. `maxAge` is equal to the current `block.timestamp - order.executableAtTime`. If `maxAge` is too small (for example, 0-3), then `OracleModule.getPrice(maxAge)` may revert [[here](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/OracleModule.sol#L132)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/OracleModule.sol#L132) even though the price is fresh.
-
-## Vulnerability Detail
-
-Below we use the `LeverageAdjust` type Order to describe this issue.
-
-```data
-minExecutabilityAge is 5s  
-maxExecutabilityAge is 60s
-```
-
-1.  Alice deposits margin on her position A via `DelayedOrder.announceLeverageAdjust`. Because if the price of the collateral continues to dump, position A will be liquidated. A pending `LeverageAdjust` order is created. Assume `block.timestamp = 1707000000`, so `order.executableAtTime = block.timestamp + minExecutabilityAge = 1707000005`. The expiration time of this order is `order.executableAtTime + maxExecutabilityAge = 1707000065`.
-2.  The order has `keeperFee` paid to the keeper, so the keepers will compete with each other as long as there is an order that can be executed. One keeper monitored the `FlatcoinEvents.OrderAnnounced` event, it requested the API to obtain `priceUpdateData`. Assume that the fresh price's `publishTime` is 1707000003.
-3.  After minExecutabilityAge seconds (block.timestamp=1707000005), the keeper executes the order via `DelayedOrder.executeOrder`. The `priceUpdateData` argument is obtained in step 2. Eventually tx will revert.
-
-Let’s analyze the reasons for revert. The call stack of [[DelayedOrder.executeOrder](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/DelayedOrder.sol#L378-L381)](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/DelayedOrder.sol#L378-L381) is as follows:
-
-```flow
-DelayedOrder.executeOrder
-  //This modifer will write priceUpdatedata to pyth oracle. Note: priceUpdatedata is from step 2
-  updatePythPrice(vault, msg.sender, priceUpdateData)
-    vault.settleFundingFees()
-    _executeLeverageAdjust(account)
-      //here checking whether order can be executed
-      _prepareExecutionOrder(account, order.executableAtTime)
-      LeverageModule.executeAdjust
-L152    uint32 maxAge = _getMaxAge(_order.executableAtTime);
-L159    (uint256 adjustPrice, ) = IOracleModule(vault.moduleAddress(FlatcoinModuleKeys._ORACLE_MODULE_KEY)).getPrice({
-            maxAge: maxAge
-        });
-        ......
-      ......
-    ......
-  ......
-```
-
-L152, `maxAge = block.timestamp - _order.executableAtTime = 1707000005 - 1707000005 = 0`
-
-L159, the `maxAge` argument passed into `OracleModule.getPrice` is 0.
-
-```solidity
-File: flatcoin-v1\src\OracleModule.sol
-094:     function getPrice(uint32 maxAge) public view returns (uint256 price, uint256 timestamp) {
-095:->       (price, timestamp) = _getPrice(maxAge);
-096:     }
-
-106:     function _getPrice(uint32 maxAge) internal view returns (uint256 price, uint256 timestamp) {
-107:->       (uint256 onchainPrice, uint256 onchainTime) = _getOnchainPrice(); // will revert if invalid
-108:->       (uint256 offchainPrice, uint256 offchainTime, bool offchainInvalid) = _getOffchainPrice();
-109:         bool offchain;
-110: 
-111:         uint256 priceDiff = (int256(onchainPrice) - int256(offchainPrice)).abs();
-112:         uint256 diffPercent = (priceDiff * 1e18) / onchainPrice;
-113:         if (diffPercent > maxDiffPercent) revert FlatcoinErrors.PriceMismatch(diffPercent);
-114: 
-115:         if (offchainInvalid == false) {
-116:             // return the freshest price
-117:             if (offchainTime >= onchainTime) {
-118:                 price = offchainPrice;
-119:                 timestamp = offchainTime;
-120:                 offchain = true;
-121:             } else {
-122:                 price = onchainPrice;
-123:                 timestamp = onchainTime;
-124:             }
-125:         } else {
-126:             price = onchainPrice;
-127:             timestamp = onchainTime;
-128:         }
-129: 
-130:         // Check that the timestamp is within the required age
-131:->       if (maxAge < type(uint32).max && timestamp + maxAge < block.timestamp) {
-132:             revert FlatcoinErrors.PriceStale(
-133:                 offchain ? FlatcoinErrors.PriceSource.OffChain : FlatcoinErrors.PriceSource.OnChain
-134:             );
-135:         }
-136:     }
-```
-
-L107, onchainTime = `updatedAt` returned by `oracle.latestRoundData()` from chainlink. `updatedAt` depends on the symbol's heartBeat. The heartbeats of almost chainlink price feeds are based on hours (such as 24 hours, 1 hour, etc.). Therefore, `onchainTime` is always lagging time, and the probability of being equal to `block.timestamp` is low. 
-
-L108, `offchainTime = publishTime of priceUpdateData = 1707000003`
-
-L117-124, `timestamp = max(onchainTime, offchainTime)`, in most cases `offchainTime` is larger.
-
-L131, in this case `maxAge=0`,
-
-```data
-maxAge < type(uint32).max && timestamp + maxAge < block.timestamp =>
-0 < type(uint32).max && 1707000003 + 0 < 1707000005 =>
-0 < type(uint32).max && 1707000003 < 1707000005
-```
-
-So if statement is met, tx revert.
-
-## Impact
-
-- Pending orders cannot be executed in time. For time-sensitive protocol, this is unacceptable.
-- The keeper obviously submitted the fresh price, but the tx failed with `FlatcoinErrors.PriceStale`.
-
-## Code Snippet
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L94-L96
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L159-L161
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L270-L272
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-The cases in the report need to be considered.
-
-```fix
-File: flatcoin-v1\src\LeverageModule.sol
-449:     function _getMaxAge(uint64 _executableAtTime) internal view returns (uint32 _maxAge) {
-450:-        return (block.timestamp - _executableAtTime).toUint32();
-450:+        return (block.timestamp - _executableAtTime + vault.minExecutabilityAge()).toUint32();
-451:     }
-```
-
-
-
-## Discussion
-
-**nevillehuang**
-
-Request PoC to facilitate discussion between sponsor and watson
-
-Sponsor comments:
-
-> From practice, it's not true. Pyth Network price feeds update once per second
-
-**sherlock-admin2**
-
-PoC requested from @securitygrid
-
-Requests remaining: **11**
-
-**sherlock-admin**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**takarez** commented:
->  valid:  this semm valid to me; medium(10)
-
-
-
-**securitygrid**
-
-copy the following POC to test/unit/Common/CancelOrder.t.sol:
-```solidity
-function test_170() public {
-        setWethPrice(2000e8);
-        skip(120);
-
-        // First deposit mint doesn't use offchain oracle price
-        announceAndExecuteDeposit({
-            traderAccount: alice,
-            keeperAccount: keeper,
-            depositAmount: 100e18,
-            oraclePrice: 2000e8,
-            keeperFeeAmount: 0
-        });
-
-        announceOpenLeverage({traderAccount: alice, margin: 100e18, additionalSize: 100e18, keeperFeeAmount: 0});
-        //keeper got offchain price before order.executableAtTime
-        skip(vaultProxy.minExecutabilityAge() - 1);
-        bytes[] memory priceUpdateData = getPriceUpdateData(2000e8);
-        //In order to compete for tradeFee, the keeper must execute orders as quickly as possible.
-        skip(vaultProxy.minExecutabilityAge());
-        vm.prank(keeper);
-        delayedOrderProxy.executeOrder{value: 1}(alice, priceUpdateData);
-    }
-    function test_170_for_sponor() public {
-        //From sponor's comment: From practice, it's not true. Pyth Network price feeds update once per second
-        setWethPrice(2000e8);
-        skip(120);
-
-        // First deposit mint doesn't use offchain oracle price
-        announceAndExecuteDeposit({
-            traderAccount: alice,
-            keeperAccount: keeper,
-            depositAmount: 100e18,
-            oraclePrice: 2000e8,
-            keeperFeeAmount: 0
-        });
-
-        announceOpenLeverage({traderAccount: alice, margin: 100e18, additionalSize: 100e18, keeperFeeAmount: 0});
-        //keeper got offchain price before order.executableAtTime
-        skip(vaultProxy.minExecutabilityAge() - 1);
-        bytes[] memory priceUpdateDataOld = getPriceUpdateData(2000e8);
-        //In order to compete for tradeFee, the keeper must execute orders as quickly as possible.
-        skip(vaultProxy.minExecutabilityAge());
-        //In same block, other keeper or other project updates price. Therefore, such a situation is ok.
-        bytes[] memory priceUpdateDataNew = getPriceUpdateData(2000e8);
-        mockPyth.updatePriceFeeds{value: 1}(priceUpdateDataNew);
-        //keeper executes order.
-        vm.prank(keeper);
-        delayedOrderProxy.executeOrder{value: 1}(alice, priceUpdateDataOld);
-    }
-/**output
-Running 2 tests for test/unit/Common/CancelOrder.t.sol:CancelDepositTest
-[FAIL. Reason: PriceStale(1)] test_170() (gas: 1329703)
-[PASS] test_170_for_sponor() (gas: 1347073)
-Test result: FAILED. 1 passed; 1 failed; 0 skipped; finished in 29.11ms
-**/
-```
-
-**D-Ig**
-
-hey, as far as I understood this whole report is based on the scenario that keeper monitors `OrderAnnounced` events and then immediately after queries pyth API to get the price update message and then waits `minExecutabilityAge` before execution. 
-
-this is the wrong flow, as our keeper monitors events and does not query anything before `minExecutabilityAge`. pyth API is fetched after `minExecutabilityAge` and then call to execute order is made.
-
-**securitygrid**
-
-@D-Ig 
-
-A pending order can be executed at [t0,t1].
-The average block time of base is 2 seconds.
-A well-developed keeper can make tx to be mined at t0. The purpose is to get keeperFee(First come, first served).
-Therefore, the price must be obtained before t0.
-
-> this is the wrong flow, as our keeper monitors events and does not query anything before minExecutabilityAge. pyth API is fetched after minExecutabilityAge and then call to execute order is made.
-
-If the keeper can only come from the protocol, then I will not submit this report. The protocol hopes that that the more keepers the better.
-Please reconsider this issue, thank you.
-
-**nevillehuang**
-
-Hi @rashtrakoff @D-Ig any further comments on the above highlighted comment?
-
-**D-Ig**
-
-> Hi @rashtrakoff @D-Ig any further comments on the above highlighted comment?
-
-I don't know what else to add. for me it's a chicken and egg problem
-
-**rashtrakoff**
-
-Let's take a look at the statement which might create an issue:
-
-    `timestamp + maxAge < block.timestamp`
-
-Since `maxAge = block.timestamp - order.executableAtTime`
-
-This can also be re-written as:
-
-    `timestamp < order.executableAtTime`
-
-Basically what I mean is that the price fetched from pyth API should be newer than executable at time. I believe this is what we intended anyway so I wouldn't consider this as an issue.
-
-**securitygrid**
-
-> A pending order can be executed at [t0,t1].
-
-The problem described in this report is that the order can never be executed at t0. Because it takes time for a tx to be created, sent to the node and finally mined. The price timestamp is obtained when tx is created. Therefore it is smaller than t0.
-
-**0xLogos**
-
-Escalate 
-
-Invalid
-
-Keepers from protocol team will work. 
-
-> After minExecutabilityAge seconds, the keeper executes the order via DelayedOrder.executeOrder. The priceUpdateData argument is obtained in step 2. Eventually tx will revert.
-
-The fact that other keepers won't work is their desing problem.
-
-**sherlock-admin2**
-
-> Escalate 
-> 
-> Invalid
-> 
-> Keepers from protocol team will work. 
-> 
-> > After minExecutabilityAge seconds, the keeper executes the order via DelayedOrder.executeOrder. The priceUpdateData argument is obtained in step 2. Eventually tx will revert.
-> 
-> The fact that other keepers won't work is their desing problem.
-
-You've created a valid escalation!
-
-To remove the escalation from consideration: Delete your comment.
-
-You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
-
-**securitygrid**
-
-Disagree with this escalation.
-The purpose of the protocol's own keeper is only to ensure that the system can operate.
-The purpose of the third-party keepers is only to make a profit, that is, to compete for keeperFee (first come, first served).
-I have fully described my views in the report/coded POC/previous comments. In the current implementation, an order cannot be executed at t0, even though the keeper takes a fresh price.
-No more comments, leave it to Sherlock to judge, thank you
-
-**Evert0x**
-
-I think this reports highlights a potential mismatch in incentives for off chain components. Seems like the protocol can function in a healthy way without implementing the proposed change. That makes it a design choice.
-
-Planning to accept escalation and invalidate. 
-
-**nevillehuang**
-
-Fair enough @Evert0x can be low severity given sponsor comments [here as well](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/170#issuecomment-1946774224)
-
-**Czar102**
-
-Result:
-Low
-Has duplicates
-
-**sherlock-admin2**
-
-Escalations have been resolved successfully!
-
-Escalation status:
-- [0xLogos](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/170/#issuecomment-1956143575): accepted
-
-# Issue M-6: Oracle will not failover as expected during liquidation 
-
-Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/177 
-
-## Found by 
-0xLogos, Stryder, alexzoid, evmboi32, ge6a, gqrp, jennifer37, nobody2018, trauki, xiaoming90
-## Summary
-
-Oracle will not failover as expected during liquidation. If the liquidation cannot be executed due to the revert described in the following scenario, underwater positions and bad debt accumulate in the protocol, threatening the solvency of the protocol.
-
-## Vulnerability Detail
-
-The liquidators have the option to update the Pyth price during liquidation. If the liquidators do not intend to update the Pyth price during liquidation, they have to call the second `liquidate(uint256 tokenId)` function at Line 85 below directly, which does not have the `updatePythPrice` modifier.
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LiquidationModule.sol#L75
-
-```solidity
-File: LiquidationModule.sol
-75:     function liquidate(
-76:         uint256 tokenID,
-77:         bytes[] calldata priceUpdateData
-78:     ) external payable whenNotPaused updatePythPrice(vault, msg.sender, priceUpdateData) {
-79:         liquidate(tokenID);
-80:     }
-81: 
-82:     /// @notice Function to liquidate a position.
-83:     /// @dev One could directly call this method instead of `liquidate(uint256, bytes[])` if they don't want to update the Pyth price.
-84:     /// @param tokenId The token ID of the leverage position.
-85:     function liquidate(uint256 tokenId) public nonReentrant whenNotPaused liquidationInvariantChecks(vault, tokenId) {
-86:         FlatcoinStructs.Position memory position = vault.getPosition(tokenId);
-```
-
-It was understood from the protocol team that the rationale for allowing the liquidators to execute a liquidation without updating the Pyth price is to ensure that the liquidations will work regardless of Pyth's working status, in which case Chainlink is the fallback, and the last oracle price will be used for the liquidation.
-
-However, upon further review, it was found that the fallback mechanism within the FlatCoin protocol does not work as expected by the protocol team.
-
-Assume that Pyth is down. In this case, no one would be able to fetch the latest off-chain price from Pyth network and update Pyth on-chain contract. As a result, the prices stored in the Pyth on-chain contract will become outdated and stale. 
-
-When liquidation is executed in FlatCoin protocol, the following `_getPrice` function will be executed to fetch the price. Line 107 below will fetch the latest price from Chainlink, while Line 108 below will fetch the last available price on the Pyth on-chain contract. When the Pyth on-chain prices have not been updated for a period of time, the deviation between `onchainPrice` and `offchainPrice` will widen till a point where `diffPercent > maxDiffPercent` and a revert will occur at Line 113 below, thus blocking the liquidation from being carried out. As a result, the liquidation mechanism within the FlatCoin protocol will stop working.
-
-Also, the protocol team's goal of allowing the liquidators to execute a liquidation without updating the Pyth price to ensure that the liquidations will work regardless of Pyth's working status will not be achieved.
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/OracleModule.sol#L113
-
-```solidity
-File: OracleModule.sol
-102:     /// @notice Returns the latest 18 decimal price of asset from either Pyth.network or Chainlink.
-103:     /// @dev It verifies the Pyth network price against Chainlink price (ensure that it is within a threshold).
-104:     /// @return price The latest 18 decimal price of asset.
-105:     /// @return timestamp The timestamp of the latest price.
-106:     function _getPrice(uint32 maxAge) internal view returns (uint256 price, uint256 timestamp) {
-107:         (uint256 onchainPrice, uint256 onchainTime) = _getOnchainPrice(); // will revert if invalid
-108:         (uint256 offchainPrice, uint256 offchainTime, bool offchainInvalid) = _getOffchainPrice();
-109:         bool offchain;
-110: 
-111:         uint256 priceDiff = (int256(onchainPrice) - int256(offchainPrice)).abs();
-112:         uint256 diffPercent = (priceDiff * 1e18) / onchainPrice;
-113:         if (diffPercent > maxDiffPercent) revert FlatcoinErrors.PriceMismatch(diffPercent);
-114: 
-115:         if (offchainInvalid == false) {
-116:             // return the freshest price
-117:             if (offchainTime >= onchainTime) {
-118:                 price = offchainPrice;
-119:                 timestamp = offchainTime;
-120:                 offchain = true;
-121:             } else {
-122:                 price = onchainPrice;
-123:                 timestamp = onchainTime;
-124:             }
-125:         } else {
-126:             price = onchainPrice;
-127:             timestamp = onchainTime;
-128:         }
-129: 
-130:         // Check that the timestamp is within the required age
-131:         if (maxAge < type(uint32).max && timestamp + maxAge < block.timestamp) {
-132:             revert FlatcoinErrors.PriceStale(
-133:                 offchain ? FlatcoinErrors.PriceSource.OffChain : FlatcoinErrors.PriceSource.OnChain
-134:             );
-135:         }
-136:     }
-```
-
-## Impact
-
-The liquidation mechanism is the core component of the protocol and is important to the solvency of the protocol. If the liquidation cannot be executed due to the revert described in the above scenario, underwater positions and bad debt accumulate in the protocol threaten the solvency of the protocol.
-
-## Code Snippet
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LiquidationModule.sol#L75
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/OracleModule.sol#L113C10-L113C92
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-Consider implementing a feature to allow the protocol team to disable the price deviation check so that the protocol team can disable it in the event that Pyth network is down for an extended period of time.
-
-
-
-## Discussion
-
-**sherlock-admin**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**takarez** commented:
->  valid: high(4)
-
-
-
-**sherlock-admin**
-
-The protocol team fixed this issue in PR/commit https://github.com/dhedge/flatcoin-v1/pull/270.
-
-# Issue M-7: Revert when adjusting the position 
-
-Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/178 
-
-## Found by 
-qmdddd, shaka, xiaoming90
-
-
-## Summary
-
-The margin adjustment will revert unexpectedly when executing. Margin adjustment is time-sensitive as long traders often rely on it to increase their position's margin when their positions are on the verge of being liquidated to avoid liquidation.
-
-If the margin adjustment fails to execute due to an inherent bug within its implementation, the user's position might be liquidated as the transaction to increase its margin fails to execute, leading to a loss of assets for the traders.
-
-## Vulnerability Detail
-
-When announcing an adjustment order, if the `marginAdjustment` is larger than 0, `marginAdjustment + totalFee` number of collateral will be transferred from the user account to the `DelayedOrder` contract. The `totalFee` comprises the keeper fee + trade fee.
-
-Let's denote `marginAdjustment` as $M$, keeper fee as $K$, and trade fee as $T$. Thus, the balance of `DelayedOrder` is increased by $(M + K + T)$ rETH.
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/DelayedOrder.sol#L303
-
-```solidity
-File: DelayedOrder.sol
-217:     function announceLeverageAdjust(
-..SNIP..
-300:         // If user increases margin, fees are charged from their account.
-301:         if (marginAdjustment > 0) {
-302:             // Sending positive margin adjustment and both fees from the user to the delayed order contract.
-303:             vault.collateral().safeTransferFrom(msg.sender, address(this), uint256(marginAdjustment) + totalFee);
-304:         }
-```
-
-When the keeper executes the adjustment order, the following function calls will happen:
-
-```solidity
-DelayedOrder.executeOrder() => DelayedOrder._executeLeverageAdjust() => LeverageModule.executeAdjust()
-```
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L137
-
-```solidity
-File: LeverageModule.sol
-147:     function executeAdjust(
-..SNIP..
-234:         // Sending keeper fee from order contract to the executor.
-235:         vault.sendCollateral({to: _keeper, amount: _order.keeperFee});
-```
-
-When the `LeverageModule.executeAdjust` function is executed, it will instruct the FlatCoin vault to send the $K$ rETH (keeper fee) to the keeper address. Thus, the amount of rETH held by the vault is reduced by $K$. However, in an edge case where the amount of rETH held by the vault is $V$ and $V < K$, the transaction will revert. 
-
-This is because, at this point, the `DelayedOrder` contract has not forwarded the keeper fee it collected from the users to the FlatCoin vault yet. The keeper fee is only forwarded to the vault after the `executeAdjust` function is executed at Line 608 below, which is too late in the above-described edge case.
-
-This edge case might occur if there is low liquidity in the vault, a high keeper fee in the market, or a combination of both. Thus, the implementation should not assume that there is always sufficient liquidity in the vault to pay the keeper in advance and collect the keeper fee from the `DelayedOrder` contract later.
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L303
-
-```solidity
-File: DelayedOrder.sol
-586:     /// @notice Execution of user delayed leverage adjust order.
-587:     /// @dev Uses the Pyth network price to execute.
-588:     /// @param account The user account which has a pending order.
-589:     function _executeLeverageAdjust(address account) internal {
-590:         FlatcoinStructs.Order memory order = _announcedOrder[account];
-591:         FlatcoinStructs.AnnouncedLeverageAdjust memory leverageAdjust = abi.decode(
-592:             order.orderData,
-593:             (FlatcoinStructs.AnnouncedLeverageAdjust)
-594:         );
-595: 
-596:         _prepareExecutionOrder(account, order.executableAtTime);
-597: 
-598:         ILeverageModule(vault.moduleAddress(FlatcoinModuleKeys._LEVERAGE_MODULE_KEY)).executeAdjust({
-599:             account: account,
-600:             keeper: msg.sender,
-601:             order: order
-602:         });
-603: 
-604:         if (leverageAdjust.marginAdjustment > 0) {
-605:             // Sending positive margin adjustment and fees from delayed order contract to the vault
-606:             vault.collateral().safeTransfer({
-607:                 to: address(vault),
-608:                 value: uint256(leverageAdjust.marginAdjustment) + leverageAdjust.tradeFee + order.keeperFee
-609:             });
-610:         }
-```
-
-## Impact
-
-The margin adjustment will revert unexpectedly when executing, as shown in the scenario above. Margin adjustment is time-sensitive as long traders often rely on it to increase their position's margin when their positions are on the verge of being liquidated to avoid liquidation.
-
-If the margin adjustment fails to execute due to an inherent bug within its implementation, the user's position might be liquidated as the transaction to increase its margin fails to execute, leading to a loss of assets for the traders.
-
-## Code Snippet
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/DelayedOrder.sol#L303
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L137
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/FlatcoinVault.sol#L303
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-Consider transferring the keeper fee to the vault first before sending it to the keeper's address to ensure that the transfer of the keeper fee will work under all circumstances.
-
-```diff
-function _executeLeverageAdjust(address account) internal {
-    FlatcoinStructs.Order memory order = _announcedOrder[account];
-    FlatcoinStructs.AnnouncedLeverageAdjust memory leverageAdjust = abi.decode(
-        order.orderData,
-        (FlatcoinStructs.AnnouncedLeverageAdjust)
-    );
-
-    _prepareExecutionOrder(account, order.executableAtTime);
-
-+    if (leverageAdjust.marginAdjustment > 0) {
-+        // Sending positive margin adjustment and fees from delayed order contract to the vault
-+        vault.collateral().safeTransfer({
-+            to: address(vault),
-+            value: uint256(leverageAdjust.marginAdjustment) + leverageAdjust.tradeFee + order.keeperFee
-+        });
-+    }
-
-    ILeverageModule(vault.moduleAddress(FlatcoinModuleKeys._LEVERAGE_MODULE_KEY)).executeAdjust({
-        account: account,
-        keeper: msg.sender,
-        order: order
-    });
-
--    if (leverageAdjust.marginAdjustment > 0) {
--        // Sending positive margin adjustment and fees from delayed order contract to the vault
--        vault.collateral().safeTransfer({
--            to: address(vault),
--            value: uint256(leverageAdjust.marginAdjustment) + leverageAdjust.tradeFee + order.keeperFee
--        });
--    }
-```
-
-
-
-## Discussion
-
-**sherlock-admin**
-
-1 comment(s) were left on this issue during the judging contest.
-
-**takarez** commented:
->  valid: medium(9)
-
-
-
-**sherlock-admin**
-
-The protocol team fixed this issue in PR/commit  https://github.com/dhedge/flatcoin-v1/pull/272.
-
-**santipu03**
-
-Escalate
-
-This issue should be invalid.
-
-In what possible scenario the vault won't have enough funds to cover for the keeper fee while adjusting a leveraged position? 
-
-The vault will always have the funds from the LPs and the margins of the traders. Even in the extreme case that the vault only has one position open, the funds from LPs and the margin deposited will be enough to cover for the keeper fee while adjusting the position. 
-
-The scenario where the vault doesn't have enough funds to cover the keeper fee is unreal, therefore, the issue should be invalidated. 
-
-**sherlock-admin2**
-
-> Escalate
-> 
-> This issue should be invalid.
-> 
-> In what possible scenario the vault won't have enough funds to cover for the keeper fee while adjusting a leveraged position? 
-> 
-> The vault will always have the funds from the LPs and the margins of the traders. Even in the extreme case that the vault only has one position open, the funds from LPs and the margin deposited will be enough to cover for the keeper fee while adjusting the position. 
-> 
-> The scenario where the vault doesn't have enough funds to cover the keeper fee is unreal, therefore, the issue should be invalidated. 
-
-You've created a valid escalation!
-
-To remove the escalation from consideration: Delete your comment.
-
-You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
-
-**securitygrid**
-
-I totally agree with santipu03's POV, which is why I didn't submit this issue.
-
-**xiaoming9090**
-
-Disagree with the above escalations. This is a valid issue as it highlights genuine accounting and logic flaws within the system. As mentioned in the report, this is an edge case, and this scenario might occur if there is low liquidity in the vault, a high keeper fee in the market, or a combination of both. One should not assume that there is always sufficient liquidity in the vault to pay the keeper in advance and collect the keeper fee back later at all times.
-
-**0xjuaan**
-
-The protocol will be running their own keepers. Thus, there won't be a shortage of keeper activity which is the only thing that can inflate keeperFee other than gas price. So keeperFee will not exceed gas fee estimates by much.  Since this will be on the base L2, low gas fees -> low keeperFee.
-
-
-Combine that with the fact that for this bug to occur, the user needs to try to executeAdjust. This means that the vault already holds margin + tradeFee + keeperFee from the leverage position creation. This means that the vault holds plenty of rETH which it can send. 
-
-
-Likelihood of this issue occuring is extremely low. Impact of this issue is medium/low. Hence, the severity is low at best.
-
-
-**Evert0x**
-
-Can someone provide more context on the exact scenario where the liquidity is insufficient to pay for the fee? 
-
-> Combine that with the fact that for this bug to occur, the user needs to try to executeAdjust. This means that the vault already holds margin + tradeFee + keeperFee from the leverage position creation. This means that the vault holds plenty of rETH which it can send.
-
-It seems like this logic will prevent this bug from being triggered. 
-
-**xiaoming9090**
-
-The keeper fee $K$ is computed based on a percentage of the adjustment made to the position's margin (`marginAdjustment`). If a user intends to make a huge adjustment (= huge `marginAdjustment`), the $K$ will be high.
-The size of $K$ also depends on the keeper fee being configured at any point. Higher fee would lead to higher $K$.
-
-The amount of rETH held by the vault ($V$) might be low in liquidity during the following scenario:
-
-- When the vault is still in its early stage where there are few users
-- A large number of users have withdrawn from the vault during a black swan event leaving little to no liquidity left on the vault
-
-Thus, it is technically possible a state where $K > V$ would occur.
-
-**0xjuaan**
-
-In the absolute worst case, K would have to exceed `marginMin` + `1.5 * marginMin` + `tradeFee` + `keeperFee` for the revert to occur.
-
-`keeperFee` and `tradeFee` are the fees paid to the vault when this user initially deposited `marginMin` to create the leverage position. 
-
-In order to deposit `marginMin` in the first place, there must have been `1.5*marginMin` deposited from LPs (this is the minimum additional size) since the minimum leverage is 1.5x.
-
-If my math is wrong, please correct me but due to the sheer impossibility of this scenario (above scenario is most optimistic for this issue), the issue should be low/informational. 
-
-**Czar102**
-
-It also seems that this transaction failure could be easily mitigated, apart from the off-chance of the off-chance of this issue happening. Would you agree that this is a low severity issue @xiaoming9090?
-
-**xiaoming9090**
-
-> It also seems that this transaction failure could be easily mitigated, apart from the off-chance of the off-chance of this issue happening. Would you agree that this is a low severity issue @xiaoming9090?
-
-If a user wants to adjust their position by a specific amount and this issue occurs, the user could:
-- Reduce the adjustment size so that the fee will be reduced accordingly to ensure the fee is smaller than the available liquidity to avoid the revert. However, the user might not achieve its intended goal (e.g., increase their margin to avoid being liquidated - in this case, the insufficient margin being top-up)
-- Wait for other users to deposit into the protocol to replenish the available liquidity, which might or might not happen (e.g., due to a lack of users or an event where everyone is exiting). Once there is sufficient liquidity, execute the adjustment order, but it might be too late.
-
-It does not seem that the above approach is "easy". I would consider it easy if one could resubmit their TX immediately without adjusting the intended adjustment size after the first failed execution, and the TX goes through the second time.
-
-I do not think that a trading system, which is time-sensitive, should suggest its users reduce their adjustment size when they intend to increase their margin under any circumstance or have the users wait for the right condition before they can adjust their position size without valid reasons (lack of liquidity is not valid). In the first place, the accounting within the system should be robust to handle such scenario.
-
-
-
-**Czar102**
-
-@xiaoming9090 Couldn't the user deposit themselves? In the end, a only small fraction of the position needs to be deposited, so they should be able to do that easily.
-
-**xiaoming9090**
-
-> @xiaoming9090 Couldn't the user deposit themselves? In the end, a only small fraction of the position needs to be deposited, so they should be able to do that easily.
-
-Yes, users could deposit themselves to bump up the available liquidity to work around the issue.
-
-**Czar102**
-
-Planning to consider this issue a Low severity one.
-
-**Czar102**
-
-Result:
-Low
-Has duplicates
-
-
-**sherlock-admin2**
-
-Escalations have been resolved successfully!
-
-Escalation status:
-- [santipu03](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/178/#issuecomment-1955101064): accepted
-
-# Issue M-8: Large amounts of points can be minted virtually without any cost 
-
-Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/187 
-
-The protocol has acknowledged this issue.
-
-## Found by 
-Bauer, Dliteofficial, GoSlang, evmboi32, jennifer37, joicygiore, nobody2018, novaman33, vesla0xfa, xiaoming90
-## Summary
-
-Large amounts of points can be minted virtually without any cost. The points are intended to be used to exchange something of value. A malicious user could abuse this to obtain a large number of points, which could obtain excessive value and create unfairness among other protocol users.
-
-## Vulnerability Detail
-
-When depositing stable collateral, the LPs only need to pay for the keeper fee. The keeper fee will be sent to the caller who executed the deposit order.
-
-When withdrawing stable collateral, the LPs need to pay for the keeper fee and withdraw fee. However, there is an instance where one does not need to pay for the withdrawal fee. Per the condition at Line 120 below, if the `totalSupply` is zero, this means that it is the final/last withdrawal. In this case, the withdraw fee will not be applicable and remain at zero.
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/StableModule.sol#L96
-
-```solidity
-File: StableModule.sol
-096:     function executeWithdraw(
-097:         address _account,
-098:         uint64 _executableAtTime,
-099:         FlatcoinStructs.AnnouncedStableWithdraw calldata _announcedWithdraw
-100:     ) external whenNotPaused onlyAuthorizedModule returns (uint256 _amountOut, uint256 _withdrawFee) {
-101:         uint256 withdrawAmount = _announcedWithdraw.withdrawAmount;
-..SNIP..
-112:         _burn(_account, withdrawAmount);
-..SNIP..
-118:         // Check that there is no significant impact on stable token price.
-119:         // This should never happen and means that too much value or not enough value was withdrawn.
-120:         if (totalSupply() > 0) {
-121:             if (
-122:                 stableCollateralPerShareAfter < stableCollateralPerShareBefore - 1e6 ||
-123:                 stableCollateralPerShareAfter > stableCollateralPerShareBefore + 1e6
-124:             ) revert FlatcoinErrors.PriceImpactDuringWithdraw();
-125: 
-126:             // Apply the withdraw fee if it's not the final withdrawal.
-127:             _withdrawFee = (stableWithdrawFee * _amountOut) / 1e18;
-128: 
-129:             // additionalSkew = 0 because withdrawal was already processed above.
-130:             vault.checkSkewMax({additionalSkew: 0});
-131:         } else {
-132:             // Need to check there are no longs open before allowing full system withdrawal.
-133:             uint256 sizeOpenedTotal = vault.getVaultSummary().globalPositions.sizeOpenedTotal;
-134: 
-135:             if (sizeOpenedTotal != 0) revert FlatcoinErrors.MaxSkewReached(sizeOpenedTotal);
-136:             if (stableCollateralPerShareAfter != 1e18) revert FlatcoinErrors.PriceImpactDuringFullWithdraw();
-137:         }
-```
-
-When LPs deposit rETH and mint UNIT, the protocol will mint points to the depositor's account as per Line 84 below.
-
-Assume that the vault has been newly deployed on-chain. Bob is the first LP to deposit rETH into the vault. Assume for a period of time (e.g., around 30 minutes), there are no other users depositing into the vault except for Bob.
-
-Bob could perform the following actions to mint points for free:
-
-- Bob announces a deposit order to deposit 100e18 rETH. Paid for the keeper fee. (Acting as a LP).
-- Wait 10 seconds for the `minExecutabilityAge` to pass
-- Bob executes the deposit order and mints 100e18 UNIT (Exchange rate 1:1). Protocol also mints 100e18 points to Bob's account. Bob gets back the keeper fee. (Acting as Keeper)
-- Immediately after his `executeDeposit` TX, Bob inserts an "announce withdraw order" TX to withdraw all his 100e18 UNIT and pay for the keeper fee.
-- Wait 10 seconds for the `minExecutabilityAge` to pass
-- Bob executes the withdraw order and receives back his initial investment of 100e18 rETH. Since he is the only LP in the protocol, it is considered the final/last withdrawal, and he does not need to pay any withdraw fee. He also got back his keeper fee. (Acting as Keeper)
-
-Each attack requires 20 seconds (10 + 10) to be executed. Bob could rinse and repeat the attack until he was no longer the only LP in the system, where he had to pay for the withdraw fee, which might make this attack unprofitable.
-
-If Bob is the only LP in the system for 30 minutes, he could gain 9000e18 points (`(30 minutes / 20 seconds) * 100e18` ) for free as Bob could get back his keeper fee and does not incur any withdraw fee. The only thing that Bob needs to pay for is the gas fee, which is extremely cheap on L2 like Base.
-
-```solidity
-File: StableModule.sol
-61:     function executeDeposit(
-62:         address _account,
-63:         uint64 _executableAtTime,
-64:         FlatcoinStructs.AnnouncedStableDeposit calldata _announcedDeposit
-65:     ) external whenNotPaused onlyAuthorizedModule returns (uint256 _liquidityMinted) {
-66:         uint256 depositAmount = _announcedDeposit.depositAmount;
-..SNIP..
-70:         _liquidityMinted = (depositAmount * (10 ** decimals())) / stableCollateralPerShare(maxAge);
-..SNIP..
-75:         _mint(_account, _liquidityMinted);
-76: 
-77:         vault.updateStableCollateralTotal(int256(depositAmount));
-..SNIP..
-82:         // Mint points
-83:         IPointsModule pointsModule = IPointsModule(vault.moduleAddress(FlatcoinModuleKeys._POINTS_MODULE_KEY));
-84:         pointsModule.mintDeposit(_account, _announcedDeposit.depositAmount);
-```
-
-## Impact
-
-Large amounts of points can be minted virtually without any cost. The points are intended to be used to exchange something of value. A malicious user could abuse this to obtain a large number of points, which could obtain excessive value from the protocol and create unfairness among other protocol users.
-
-## Code Snippet
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/StableModule.sol#L96
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-One approach that could mitigate this risk is also to impose withdraw fee for the final/last withdrawal so that no one could abuse this exception to perform any attack that was once not profitable due to the need to pay withdraw fee.
-
-In addition, consider deducting the points once a position is closed or reduced in size so that no one can attempt to open and adjust/close a position repeatedly to obtain more points.
-
-
-
-## Discussion
-
-**sherlock-admin**
-
-2 comment(s) were left on this issue during the judging contest.
-
-**0xLogos** commented:
-> low/info, points != funds
-
-**takarez** commented:
->  invalid
-
-
-
-**nevillehuang**
-
-@rashtrakoff Any reason why this issue was disputed? What are the points FMP for?
-
-I believe large amount of points shouldn't be freely minted.
-
-**rashtrakoff**
-
-@nevillehuang , this is a good find imo but since we are going to be the first depositors as well as creators of leverage positions as part of protocol initialisation I wouldn't believe this is something we  are concerned about. Furthermore, the points have no monetary value (at least not something we are going to assign) and there are costs associated with doing looping (keeper fees, possible losses due to price volatility etc.). Cc @itsermin @D-Ig .
-
-**nevillehuang**
-
-@rashtrakoff I will be maintaining as medium severity, even though points currently do not hold value, I believe it is not intended to allow free minting of points freely given it will hold some form of incentives in the future, so I believe it breaks core contract functionality. From my understanding, being the first depositor is only given as an example and is not required as shown in other issues such as #44 and #141.
-
-**0xLogos**
-
-Escalate 
-
-Should be info
-
-> the points have no monetary value
-> there are costs associated with doing looping
-
-**sherlock-admin2**
-
-> Escalate 
-> 
-> Should be info
-> 
-> > the points have no monetary value
-> > there are costs associated with doing looping
-
-You've created a valid escalation!
-
-To remove the escalation from consideration: Delete your comment.
-
-You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
-
-**santipu03**
-
-Agree with @0xLogos. 
-
-Moreover, the withdrawal fee will make the attacker lose value with each withdrawal, making the attack unfeasable. 
-
-Even in the improbable case that the attacker is a sophisticated bot that can act as a keeper and the withdrawal fee is not activated, the probability would be low with the impact being low/medium. Therefore, the overall severity should be low. 
-
-**securitygrid**
-
-This issue is valid. According to rules:
-
-> Loss of airdrops or liquidity fees or any other rewards that are not part of the original protocol design is not considered a valid high/medium
-
-FMP is part of the original protocol design. It's an incentive for users.
-
-**0xcrunch**
-
-Sponsor is OK with issues related to FMP if they are not relevant to the overall functioning of the protocol.
-
-https://discord.com/channels/812037309376495636/1199005620536356874/1200372130253115413
-
-**xiaoming9090**
-
-If points are not an incentive or something of value to the user, then there is no purpose for having a points system in the first place. The obvious answer is that the points will not be worthless because it makes no sense for users to hold something that is worthless. With that, points should be considered something of value, and any bugs, such as infinity minting of points/values, should not be QA/Low.
-
-**0xcrunch**
-
-This kind of issue has no impact to the overall functioning of the protocol, so it is acceptable as stated by sponsor in the public channel.
-
-**nevillehuang**
-
-Agree with @xiaoming9090, I believe there is no logical reason why this should be allowed in the first place. 
-
-@rashtrakoff What is the intended use case of points? It must have some incentive attached to it (even if its in the future), so users should never be getting points arbitrarily.
-
-**itsermin**
-
-Thanks for your inputs here @xiaoming9090 @nevillehuang 
-
-I discussed this with @rashtrakoff today. Even though there's a cost associated with looped mints (trading fees). Being able to mint a large number of FMP is not ideal. The user could alao potentially LP on the UNIT side to minimise their downside.
-
-We're looking at a couple of options:
-a) put a daily cap on the number of available FMP
-b) remove the trade volume minting altogether
-
-**0xcrunch**
-
-Rewarding an issue publicly known as acceptable is unfair to watsons who didn't submit the issue out of respecting of Sherlock rules.
-
-**Czar102**
-
-I'd normally consider this a valid issue given that the points may have some value, but given the sponsor's message referenced in https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/187#issuecomment-1956258407, I think this should be considered informational.
-
-Planning to accept the escalation and invalidate the issue.
-
-**nevillehuang**
-
-@Czar102 Fair enough, given the new hierachy of truth in place, I believe this can be low severity, unless watsons have any contest details and/or protocol documentation indicating a incentivized use case of points. @xiaoming9090 @securitygrid 
-
-> Hierarchy of truth: Contest README > Sherlock rules for valid issues > protocol documentation (including code comments) > protocol answers on the contest public Discord channel.
-
-
-
-**novaman33**
-
-@Czar102 , I believe there are several code comments that suggest that points are incentive:
-In `PointsModule.sol` 
-```
-/// @title PointsModule
-/// @author dHEDGE
-/// @notice Module for awarding points as an incentive.
-```
-
-And before owner mintTo function:
-```
-/// @notice Owner can mint points to any account. 
-This can be used to distribute points to competition winners and other reward incentives.
-    ///         The points start a 12 month unlock tax (update unlockTime).
- ```
-These state that points will be used as an encouragement, meaning they will either be something of value or be used to obtain something of value. I cannot agree that being able to obtain large amounts of points is a low severity case, given the comments in the code, which in the sherlock's Hierarchy of truth have more weight than protocol answers on the contest public Discord channel.
-
-**nevillehuang**
-
-> @Czar102 , I believe there are several code comments that suggest that points are incentive: In `PointsModule.sol`
-> 
-> ```
-> /// @title PointsModule
-> /// @author dHEDGE
-> /// @notice Module for awarding points as an incentive.
-> ```
-> 
-> And before owner mintTo function:
-> 
-> ```
-> /// @notice Owner can mint points to any account. 
-> This can be used to distribute points to competition winners and other reward incentives.
->     ///         The points start a 12 month unlock tax (update unlockTime).
-> ```
-> 
-> These state that points will be used as an encouragement, meaning they will either be something of value or be used to obtain something of value. I cannot agree that being able to obtain large amounts of points is a low severity case, given the comments in the code, which in the sherlock's Hierarchy of truth have more weight than protocol answers on the contest public Discord channel.
-
-Good point, in that case, I believe this issue should remain medium severity, given code comments (as seen [here](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/PointsModule.sol#L14) and [here](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/PointsModule.sol#L89) has a greater significance than discord messages as shown in the hierarchy of truth [above](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/187#issuecomment-1970591636)
-
-**Czar102**
-
-I believe considering something an incentive doesn't imply this functionality being important enough for issues regarding it to be considered valid, while the sponsor's comment directly specified whether the issues of the type are valid. Also, these comments don't contradict the sponsor's comment at all.
-
-I stand by the previous proposition to invalidate the issue.
-
-**novaman33**
-
-@Czar102 the contracts in scope are stated in the readMe. The sponsor said " we can be ok with issues with the same.",  by which they state issues related to the points module are out of scope. I cannot understand why the points module is in scope in the first place. Given the Hierarchy of truth I believe points module are still in scope.
-
-
-**nevillehuang**
-
-@Czar102 I don't quite get your statement, it was already stated explicitly in code comments of the contract that points are meant to have an incentivized use case. So by hierarchy of truth, this is clearly a medium severity issue (and maybe can even be argued as high severity). Whatever it is, I will respect your decision, but hoping for a better clarification.
-
-**Czar102**
-
-Given the hierarchy of truth, I think this issue is indeed a valid Medium.
-
-Planning to reject the escalation and leave the issue as is.
-
-**Evert0x**
-
-Result:
-Medium
-Has Duplicates
-
-**sherlock-admin2**
-
-Escalations have been resolved successfully!
-
-Escalation status:
-- [0xLogos](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/187/#issuecomment-1956094137): rejected
-
-# Issue M-9: Vault Inflation Attack 
-
-Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/190 
-
-The protocol has acknowledged this issue.
-
-## Found by 
-santipu\_, xiaoming90
-## Summary
-
-Malicious users can perform an inflation attack against the vault to steal the assets of the victim.
-
-## Vulnerability Detail
-
-A malicious user can perform a donation to execute a classic first depositor/ERC4626 inflation Attack against the FlatCoin vault. The general process of this attack is well-known, and a detailed explanation of this attack can be found in many of the resources such as the following:
-
-- https://blog.openzeppelin.com/a-novel-defense-against-erc4626-inflation-attacks
-- https://mixbytes.io/blog/overview-of-the-inflation-attack
-
-In short, to kick-start the attack, the malicious user will often usually mint the smallest possible amount of shares (e.g., 1 wei) and then donate significant assets to the vault to inflate the number of assets per share. Subsequently, it will cause a rounding error when other users deposit.
-
-However, in Flatcoin, there are various safeguards in place to mitigate this attack. Thus, one would need to perform additional steps to workaround/bypass the existing controls.
-
-Let's divide the setup of the attack into two main parts:
-
-1. Malicious user mint 1 mint of share
-2. Donate or transfer assets to the vault to inflate the assets per share
-
-#### Part 1 - Malicious user mint 1 mint of share
-
-Users could attempt to mint 1 wei of share. However, the validation check at Line 79 will revert as the share minted is less than `MIN_LIQUIDITY` = 10_000. However, this minimum liquidation requirement check can be bypassed.
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/StableModule.sol#L61
-
-```solidity
-File: StableModule.sol
-61:     function executeDeposit(
-62:         address _account,
-63:         uint64 _executableAtTime,
-64:         FlatcoinStructs.AnnouncedStableDeposit calldata _announcedDeposit
-65:     ) external whenNotPaused onlyAuthorizedModule returns (uint256 _liquidityMinted) {
-66:         uint256 depositAmount = _announcedDeposit.depositAmount;
-67: 
-68:         uint32 maxAge = _getMaxAge(_executableAtTime);
-69: 
-70:         _liquidityMinted = (depositAmount * (10 ** decimals())) / stableCollateralPerShare(maxAge);
-71: 
-72:         if (_liquidityMinted < _announcedDeposit.minAmountOut)
-73:             revert FlatcoinErrors.HighSlippage(_liquidityMinted, _announcedDeposit.minAmountOut);
-74: 
-75:         _mint(_account, _liquidityMinted);
-76: 
-77:         vault.updateStableCollateralTotal(int256(depositAmount));
-78: 
-79:         if (totalSupply() < MIN_LIQUIDITY) // @audit-info MIN_LIQUIDITY = 10_000
-80:             revert FlatcoinErrors.AmountTooSmall({amount: totalSupply(), minAmount: MIN_LIQUIDITY});
-```
-
-First, Bob mints 10000 wei shares via `executeDeposit` function. Next, Bob withdraws 9999 wei shares via the `executeWithdraw`. In the end, Bob successfully owned only 1 wei share, which is the prerequisite for this attack.
-
-#### Part 2 - Donate or transfer assets to the vault to inflate the assets per share
-
-The vault tracks the number of collateral within the state variables. Thus, simply transferring rETH collateral to the vault directly will not work, and the assets per share will remain the same.
-
-To work around this, Bob creates a large number of accounts (with different wallet addresses). He could choose any or both of the following methods to indirectly transfer collateral to the LP pool/vault to inflate the assets per share:
-
-1) Open a large number of leveraged long positions with the intention of incurring large amounts of losses. The long positions' losses are the gains of the LPs, and the collateral per share will increase.
-2) Open a large number of leveraged long positions till the max skew of 120%. Thus, this will cause the funding rate to increase, and the long will have to pay the LPs, which will also increase the collateral per share.
-
-#### Triggering rounding error
-
-The `stableCollateralPerShare` will be inflated at this point. Following is the formula used to determine the number of shares minted to the depositor.
-
-If the `depositAmount` by the victim is not sufficiently large enough, the amount of shares minted to the depositor will round down to zero.
-
-```solidity
-_collateralPerShare = (stableBalance * (10 ** decimals())) / totalSupply;
-_liquidityMinted = (depositAmount * (10 ** decimals())) / _collateralPerShare
-```
-
-Finally, the attacker withdraws their share from the pool. Since they are the only ones with any shares, this withdrawal equals the balance of the vault. This means the attacker also withdraws the tokens deposited by the victim earlier.
-
-## Impact
-
-Malicous users could steal the assets of the victim.
-
-## Code Snippet
-
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/StableModule.sol#L61
-
-## Tool used
-
-Manual Review
-
-## Recommendation
-
-A `MIN_LIQUIDITY` amount of shares needs to exist within the vault to guard against a common inflation attack.
-
-However, the current approach of only checking if the `totalSupply() < MIN_LIQUIDITY` is not sufficient, and could be bypassed by making use of the withdraw function.
-
-A more robust approach to ensuring that there is always a minimum number of shares to guard against inflation attack is to mint a certain amount of shares to zero address (dead address) during contract deployment (similar to what has been implemented in Uniswap V2). 
-
-
-
-## Discussion
-
-**sherlock-admin**
-
-2 comment(s) were left on this issue during the judging contest.
-
-**ubl4nk** commented:
-> invalid or Low-Impact -> Bob can't deposit 10_000 wei and withdraw 9_999, because there are delayed-orders (orders become pending), there are no sorted orders and keepers can select to execute which orders first
-
-**takarez** commented:
->  invalid
-
-
-
-**0xLogos**
-
-Escalate 
-
-Low. Attack is too risky.
-
-There is no frontrunning so attacker must prepare attack in advance. Someone can deposit amount larger than attacker expected and take his money.
-
-**sherlock-admin2**
-
-> Escalate 
-> 
-> Low. Attack is too risky.
-> 
-> There is no frontrunning so attacker must prepare attack in advance. Someone can deposit amount larger than attacker expected and take his money.
-
-You've created a valid escalation!
-
-To remove the escalation from consideration: Delete your comment.
-
-You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
-
-**0xLogos**
-
-> If the depositAmount by the victim is not sufficiently large enough, the amount of shares minted to the depositor will round down to zero.
-
-But if deposit is large enough, attacker will lose.
-
-**santipu03**
-
-Hi @0xLogos,
-
-Check my dup issue for clarification (#128) but the attacker can easily provoke a permanent DoS on the Vault by being the first depositor. In case a user deposits an insane amount of funds to pass the `MIN_LIQUIDITY` check, the attacker would be able to steal most of the funds as a classic inflation attack. 
-
-**xiaoming9090**
-
-> Escalate
-> 
-> Low. Attack is too risky.
-> 
-> There is no frontrunning so attacker must prepare attack in advance. Someone can deposit amount larger than attacker expected and take his money.
-
-The escalation is invalid. Refer to the santipu03 response above. To add to his response:
-
-The attack can be executed without frontrunning once the vault has been "set up" by the malicious user (After completing Steps 1 and 2 in the above report). Afterward, victims whose `depositAmount` is not sufficiently large enough will lose their assets to the attacker.
-
-Also, the claim in the escalation that someone depositing an amount larger than the attacker will cause the attacker's money to be stolen is baseless.
-
-**0xcrunch**
-
-This is a low/QA, the issue can be easily mitigated by sponsor conducting a sacrificial deposit in the same transaction of deploying the Vault.
-
-
-**xiaoming9090**
-
-> This is a low/QA, the issue can be easily mitigated by sponsor conducting a sacrificial deposit in the same transaction of deploying the Vault.
-
-Disagree. There is no evidence provided to Watsons in the public domain during the audit contest period (22 Jan to 4 Feb) that states that the protocol team will perform a sacrificial deposit when deploying the vault.
-
-**r0ck3tzx**
-
-This attack is absolutely not practical in the environment where front-running is not possible such as Base and its not possible to have general MEV agents - see the recent Radiant hack. If this issue would be considered valid then all reported front-running issues should be as well. Thus the The low/QA severity is more appropriate for this issue.
-
-
-**Czar102**
-
-I believe that this is a borderline Med/Low that should be included as Med since it's possible to guess, or to somehow get to know the timing of the deposit, which is the only information the attacker needs.
-
-Planning to reject the escalation and leave the issue as is.
-
-**nevillehuang**
-
-Agree with @Czar102 and @xiaoming9090 
-
-**Czar102**
-
-Result:
-Medium
-Has duplicates
-
-**sherlock-admin2**
-
-Escalations have been resolved successfully!
-
-Escalation status:
-- [0xLogos](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/190/#issuecomment-1956476732): rejected
-
-# Issue M-10: Announced orders of a position are not deleted when liquidation happens 
-
-Source: https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/287 
-
-## Found by 
-juan
-## Summary
-Announced orders of a position are not deleted when liquidation happens
-
-## Vulnerability Detail
-When a position is liquidated, an existing announced order for that position is not deleted. This means that the user's order can still be executed after liquidation of the position. This is only an issue for leverageAdjut orders, and only if the points module is removed (and this has been said to be a temporary feature by the devs, so the points module is likely to be removed in the future).
-
-## Impact
-Once the points module is removed, a user's leverageAdjust order with positive `additionalSizeAdjustment` will still execute after the position has been liquidated.
-
-## Code Snippet
-https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L147
-
-## Tool used
-Manual Review
-
-## Recommendation
-Delete announced orders of a position when the position is liquidated
-
-
-
-## Discussion
-
-**sherlock-admin**
-
-2 comment(s) were left on this issue during the judging contest.
-
-**takarez** commented:
->  invalid
-
-**takarez** commented:
->  valid: high(10)
-
-
-
-**santipu03**
-
-Escalate
-
-This issue should be invalid because the transaction will revert when checking the owner of the ERC-721 position. If the position has been liquidated, the leverage adjustment is going to revert in [this line](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L226). Because the token has been burned, `ownerOf` will revert.
-
-The Watson here is making assumptions on future code changes but the attack path is not feasible with the current state of the code. 
-
-**sherlock-admin2**
-
-> Escalate
-> 
-> This issue should be invalid because the transaction will revert when checking the owner of the ERC-721 position. If the position has been liquidated, the leverage adjustment is going to revert in [this line](https://github.com/sherlock-audit/2023-12-flatmoney/blob/main/flatcoin-v1/src/LeverageModule.sol#L226). Because the token has been burned, `ownerOf` will revert.
-> 
-> The Watson here is making assumptions on future code changes but the attack path is not feasible with the current state of the code. 
-
-You've created a valid escalation!
-
-To remove the escalation from consideration: Delete your comment.
-
-You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
-
-**RealLTDingZhen**
-
-Escalate
-
-Should be invalid because this has the same path as [issue227](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/227)
-
-**sherlock-admin2**
-
-> Escalate
-> 
-> Should be invalid because this has the same path as [issue227](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/227)
-
-You've created a valid escalation!
-
-To remove the escalation from consideration: Delete your comment.
-
-You may delete or edit your escalation comment anytime before the 48-hour escalation window closes. After that, the escalation becomes final.
-
-**0xjuaan**
-
-I submitted this issue because:
-1. When I told the sponsor about it, they thanked me and said that they would definitely need to fix it.
-2. The sponsor also said that they are likely to remove the PointsModule in the future, and that would cause the vulnerability.
-
-I do understand if this were to be invalidated since the attack is technically blocked. 
-
-However if I did not provide this information to the protocol, they could have easily removed the points module features, deployed the vulnerable code to mainnet, and user funds would be lost. But this report has prevented that, so I believe that it should be rewarded.
-
-**nevillehuang**
-
-@0xjuaan Can you provide a coded PoC and a clearer description of what is the impact here, namely (fund loss, DoS or breaks core contract functionality)
-
-**0xjuaan**
-
-@nevillehuang A coded PoC won't work, since the issue requires the 3 lines of points module code to be removed. 
-
-However if it was removed as stated by sponsor, here's the impact (fund loss for users):
-User announces order to increase position size -> Position gets liquidated -> Keeper executes user's  pending order (since it wasn't deleted) -> User can never get back those funds since any attempt to announce an order for that position will revert.
-
-Do you still want a coded PoC? It would require removing the points modules code from the LeverageModule contract
-
-**nevillehuang**
-
-Which 3 lines are you referring to? Are they code logic that are intended to be removed?
-
-@0xjuaan If yes please do that, I believe if the understanding of the codebase is correct, its can warrant validity based on this comment [here](https://github.com/sherlock-audit/2023-12-jojo-exchange-update-judging/issues/30#issuecomment-1936076314)
-
-**0xjuaan**
-
-The 3 lines are [here](https://github.com/sherlock-audit/2023-12-flatmoney/blob/bba4f077a64f43fbd565f8983388d0e985cb85db/flatcoin-v1/src/LeverageModule.sol#L226-L229) and yes, the sponsor has said that the points module is likely to be removed, and they encouraged me to submit this issue + admitted that they would make sure to fix it. You can confirm this with @rashtrakoff
-
-I already had most of the PoC ready, since I sent it to the sponsor on discord a while ago. However sponsor only let me know at the end of the contest that the points module is likely to be removed, so I only had 8 mins to submit this report at the end of the contest, which is why the explanation is a bit limited in the report and PoC wasn't provided.
-
-PoC is below. To run it, place the given function in `Liquidate.t.sol` and comment out the three lines of code that I linked above.
-<details>
-<summary> POC </summary>
-
-```javascript
-function test_executeLeverageAdjust_postLiquidation() public {
-    setWethPrice(1000e8);
-
-    uint256 tokenId = announceAndExecuteDepositAndLeverageOpen({
-        traderAccount: alice,
-        keeperAccount: keeper,
-        depositAmount: 100e18,
-        margin: 10e18,
-        additionalSize: 30e18,
-        oraclePrice: 1000e8,
-        keeperFeeAmount: 0
-    });
-    
-    setWethPrice(750e8);
-
-    // user announces order, this sends 3e18 of margin to DelayedOrder
-    announceAdjustLeverage(alice, tokenId, 3e18, 2e18 , 0);
-
-    skip(uint256(vaultProxy.minExecutabilityAge())); 
-
-    // user gets liquidated, before the 3e18 of margin goes to vault
-    vm.startPrank(liquidator);
-    liquidationModProxy.liquidate(tokenId);
-
-    // only now after liquidation, the 3e18 of margin is sent to the vault
-    executeAdjustLeverage(keeper, alice, 750e8);
-    vm.stopPrank();
-
-    // Try to close position, but can't (so funds are lost forever)
-    vm.prank(alice);
-    vm.expectRevert("ERC721: invalid token ID");
-    delayedOrderProxy.announceLeverageClose(tokenId, 500, 1e18);
-}
-```
-</details>
-
-Thank you for looking into this @nevillehuang 
-
-**RealLTDingZhen**
-
-> The sponsor also said that they are likely to remove the PointsModule in the future, and that would cause the vulnerability.
-
-Where did sponsors say that?
-
-**rashtrakoff**
-
-@0xjuaan I didn't say it is likely to be removed but rather it is not a core fixture of the protocol so points per dize can be set to 0 or in other words _can_ be deprecated.
-
-**0xjuaan**
-
-![image](https://github.com/sherlock-audit/2023-12-flatmoney-judging/assets/122077337/5c458bf8-66c1-437c-879c-0fb03a318af1)
-
-> not a permanent fixture
-
-This is what I was going off of, I thought this means that the points module is not permanent.
-
-
-**rashtrakoff**
-
-Yes, that's what I wanted to say. Someday we will deprecate it. Which day, not sure.
-
-**securitygrid**
-
-Can deleting code be considered an issue? unacceptable
-
-**nevillehuang**
-
-Based on sponsors comments [here](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/287#issuecomment-1961283663), I believe this issue to be invalid.
-
-**Czar102**
-
-Planning to invalidate as to my knowledge, there should be no expectation for the codebase to work without the `PointsModule`. Will accept only the first escalation.
-
-**Czar102**
-
-Result:
-Invalid
-Unique
-
-**sherlock-admin2**
-
-Escalations have been resolved successfully!
-
-Escalation status:
-- [santipu03](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/287/#issuecomment-1955081905): accepted
-- [RealLTDingZhen](https://github.com/sherlock-audit/2023-12-flatmoney-judging/issues/287/#issuecomment-1956653337): rejected
 
